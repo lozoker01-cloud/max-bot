@@ -44,35 +44,48 @@ def register_webhook():
 def startup_event():
     register_webhook()
 
-def find_best_match(user_message: str) -> str:
+def find_best_matches(user_message: str, top_k: int = 3) -> str:
+    """Ищет несколько наиболее подходящих по смыслу/ключевым словам вопросов в базе знаний"""
     user_words = set(user_message.lower().split())
+    # Убираем слишком короткие слова
     user_words = {w for w in user_words if len(w) > 2}
-    if not user_words:
-        return faq_data[0]['answer']
     
-    best_score = 0
-    best_item = faq_data[0]
+    if not user_words:
+        return f"Вопрос: {faq_data[0]['question']}\nОтвет: {faq_data[0]['answer']}"
+    
+    scored_items = []
     for item in faq_data:
         q_words = set(item['question'].lower().split())
         a_words = set(item['answer'].lower().split())
         item_words = q_words.union(a_words)
+        
         score = len(user_words.intersection(item_words))
-        if score > best_score:
-            best_score = score
-            best_item = item
-            
-    if best_score > 0:
-        return f"Вопрос: {best_item['question']}\nОтвет: {best_item['answer']}"
-    else:
-        return f"Вопрос: {faq_data[0]['question']}\nОтвет: {faq_data[0]['answer']}"
+        scored_items.append((score, item))
+    
+    # Сортируем по убыванию релевантности
+    scored_items.sort(key=lambda x: x[0], reverse=True)
+    
+    # Берем топ-к результатов с ненулевым совпадением (или хотя бы лучшие)
+    best_matches = [item for score, item in scored_items[:top_k] if score > 0]
+    
+    if not best_matches:
+        # Если совпадений нет вообще, возвращаем общую информацию
+        best_matches = [faq_data[0]]
+        
+    context_text = ""
+    for idx, item in enumerate(best_matches, 1):
+        context_text += f"Фрагмент {idx}:\nВопрос: {item['question']}\nОтвет: {item['answer']}\n\n"
+        
+    return context_text
 
 def get_groq_answer(user_message: str) -> str:
-    retrieved_context = find_best_match(user_message)
+    retrieved_context = find_best_matches(user_message, top_k=3)
     system_prompt = (
-        "Ты вежливый и компетентный ассистент приемной комиссии РГСУ. "
-        "Твоя задача — консультировать абитуриентов ТОЛЬКО на основе предоставленного контекста. "
-        "Не придумывай информацию. Если ответа нет в контексте, отправь контакты ПК РГСУ: +7-495-255-67-67.\n\n"
-        f"КОНТЕКСТ ИЗ БАЗЫ ЗНАНИЙ:\n{retrieved_context}"
+        "Ты вежливый и компетентный цифровой ассистент приемной комиссии РГСУ. "
+        "Твоя задача — консультировать абитуриентов своими словами на основе предоставленных фрагментов из базы знаний. "
+        "Пользователи могут задавать вопросы в свободной форме (с синонимами, сленгом или неточностями). Твоя цель — понять суть вопроса, сопоставить с контекстом и дать развернутый, точный ответ. "
+        "Не придумывай информацию, которой нет в контексте. Если точного ответа в контексте нет, вежливо предложи обратиться в приемную комиссию РГСУ по телефону: +7-495-255-67-67.\n\n"
+        f"БАЗА ЗНАНИЙ (ФРАГМЕНТЫ):\n{retrieved_context}"
     )
     
     response = groq_client.chat.completions.create(
@@ -81,8 +94,8 @@ def get_groq_answer(user_message: str) -> str:
             {"role": "user", "content": user_message}
         ],
         model="openai/gpt-oss-120b",
-        temperature=0.2,
-        max_tokens=350
+        temperature=0.3,
+        max_tokens=400
     )
     return response.choices[0].message.content
 
@@ -128,7 +141,6 @@ async def max_webhook(request: Request):
             ""
         )
         
-        # Надежно вытаскиваем chat_id
         chat_id = (
             msg_block.get("chat_id") or 
             msg_block.get("recipient", {}).get("chat_id") or
@@ -144,10 +156,11 @@ async def max_webhook(request: Request):
         print(f"УСПЕХ! Чат: {chat_id}, Текст: {message_text}")
 
         if message_text.lower() == "/start":
-            reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении!"
+            reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, баллах, общежитии или документах!"
             send_message_to_max(str(chat_id), reply)
             return {"status": "ok"}
 
+        # Умная генерация ответа через Groq с использованием топ-3 релевантных фрагментов
         bot_reply = get_groq_answer(message_text)
         send_message_to_max(str(chat_id), bot_reply)
         
