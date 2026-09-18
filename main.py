@@ -86,7 +86,7 @@ def get_groq_answer(user_message: str) -> str:
     )
     return response.choices[0].message.content
 
-def send_message_to_max(chat_id: str, text: str, user_id: str = None):
+def send_message_to_max(chat_id: str, text: str):
     if not MAX_BOT_TOKEN:
         print("Ошибка: MAX_BOT_TOKEN пустой!")
         return
@@ -95,16 +95,13 @@ def send_message_to_max(chat_id: str, text: str, user_id: str = None):
         "Content-Type": "application/json"
     }
     
-    # Согласно актуальной документации МАКС, отправляем recipient с chat_id или user_id
     payload = {
         "text": text,
-        "recipient": {
-            "chat_id": int(chat_id) if chat_id.isdigit() else chat_id
-        }
+        "chat_id": chat_id
     }
     
     try:
-        res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, json=payload, verify=False, timeout=5)
+        res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params={"chat_id": chat_id}, json=payload, verify=False, timeout=5)
         print(f"Ответ МАКС при отправке сообщения: {res.status_code} {res.text}")
     except Exception as e:
         print(f"Ошибка отправки сообщения в МАКС: {e}")
@@ -124,7 +121,6 @@ async def max_webhook(request: Request):
         
         msg_block = data.get("message", {})
         
-        # Извлекаем текст
         message_text = (
             msg_block.get("body", {}).get("text") or 
             msg_block.get("text") or 
@@ -132,7 +128,7 @@ async def max_webhook(request: Request):
             ""
         )
         
-        # Ищем правильный идентификатор чата из структуры МАКС (chat_id или sender id)
+        # Надежно вытаскиваем chat_id
         chat_id = (
             msg_block.get("chat_id") or 
             msg_block.get("recipient", {}).get("chat_id") or
@@ -152,7 +148,6 @@ async def max_webhook(request: Request):
             send_message_to_max(str(chat_id), reply)
             return {"status": "ok"}
 
-        # Генерация ответа через Groq по нашему JSON и отправка
         bot_reply = get_groq_answer(message_text)
         send_message_to_max(str(chat_id), bot_reply)
         
