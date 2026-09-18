@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import urllib3
+import traceback
 from fastapi import FastAPI, Request
 from groq import Groq
 
@@ -170,6 +171,7 @@ async def max_webhook(request: Request):
         send_message_to_max(str(chat_id), bot_reply)
           
     except Exception as e:
-        print(f"ОШИБКА В WEBHOOK: {e}")
+        print(f"ОШИБКА В WEBHOOK: {type(e).__name__}: {e}")
+        traceback.print_exc()
           
     return {"status": "ok"}
