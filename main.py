@@ -18,11 +18,42 @@ groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 print("Загрузка базы знаний...")
 try:
     with open('faq_data.json', 'r', encoding='utf-8') as f:
-        faq_data = json.load(f)
+        faq_raw = json.load(f)
     print("База знаний успешно загружена!")
 except Exception as e:
     print(f"Ошибка загрузки faq_data.json: {e}")
-    faq_data = []
+    faq_raw = {}
+
+# Функция для превращения вложенных категорий в плоский список вопросов
+def flatten_faq(data):
+    flat_list = []
+    if isinstance(data, dict):
+        # Если это структура с ключом "categories"
+        if "categories" in data:
+            for cat in data["categories"]:
+                if isinstance(cat, dict) and "items" in cat:
+                    for item in cat["items"]:
+                        if isinstance(item, dict):
+                            flat_list.append(item)
+        # Если это просто словарь с вопросами
+        elif "question" in data:
+            flat_list.append(data)
+        else:
+            for v in data.values():
+                if isinstance(v, list):
+                    for sub in v:
+                        if isinstance(sub, dict):
+                            flat_list.append(sub)
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                if "items" in item:
+                    flat_list.extend(item["items"])
+                elif "question" in item:
+                    flat_list.append(item)
+    return flat_list
+
+faq_items = flatten_faq(faq_raw)
 
 def register_webhook():
     if not MAX_BOT_TOKEN:
@@ -50,22 +81,14 @@ def startup_event():
     register_webhook()
 
 def find_best_match(user_message: str) -> str:
-    global faq_data
-    if isinstance(faq_data, dict):
-        if "question" in faq_data:
-            faq_data = [faq_data]
-        else:
-            faq_data = list(faq_data.values())
-
-    if not faq_data:
-        return "Вопрос: Консультация\nОтвет: Обратитесь в приемную комиссию РГСУ."
+    global faq_items
+    if not faq_items:
+        return "Вопрос: Консультация\nОтвет: Обратитесь в приемную комиссию РГСУ по телефону +7-495-255-67-67."
 
     user_words = set(user_message.lower().split())
     user_words = {w for w in user_words if len(w) > 2}
     
-    first_item = faq_data[0] if isinstance(faq_data, list) and len(faq_data) > 0 else {"question": "", "answer": "Информация отсутствует."}
-    if not isinstance(first_item, dict):
-        first_item = {"question": str(first_item), "answer": str(first_item)}
+    first_item = faq_items[0]
 
     if not user_words:
         return f"Вопрос: {first_item.get('question', '')}\nОтвет: {first_item.get('answer', '')}"
@@ -73,12 +96,16 @@ def find_best_match(user_message: str) -> str:
     best_score = 0
     best_item = first_item
     
-    for item in faq_data:
+    for item in faq_items:
         if not isinstance(item, dict):
             continue
-        q_words = set(item.get('question', '').lower().split())
-        a_words = set(item.get('answer', '').lower().split())
+        q_text = item.get('question', '')
+        a_text = item.get('answer', '')
+        
+        q_words = set(q_text.lower().split())
+        a_words = set(a_text.lower().split())
         item_words = q_words.union(a_words)
+        
         score = len(user_words.intersection(item_words))
         if score > best_score:
             best_score = score
@@ -87,6 +114,7 @@ def find_best_match(user_message: str) -> str:
     if best_score > 0:
         return f"Вопрос: {best_item.get('question', '')}\nОтвет: {best_item.get('answer', '')}"
     else:
+        # Если точных совпадений нет, возвращаем первый вопрос или общую информацию
         return f"Вопрос: {first_item.get('question', '')}\nОтвет: {first_item.get('answer', '')}"
 
 def get_groq_answer(user_message: str) -> str:
@@ -118,7 +146,6 @@ def send_message_to_max(target_id: str, text: str):
         "Content-Type": "application/json"
     }
     
-    # Универсальная отправка: сначала пробуем user_id (для личных чатов), затем chat_id (для групп)
     for id_param in ["user_id", "chat_id"]:
         params = {id_param: target_id}
         payload = {
@@ -152,7 +179,6 @@ async def max_webhook(request: Request):
           
         msg_block = data.get("message", {})
           
-        # Извлекаем текст
         message_text = (
             msg_block.get("body", {}).get("text") or 
             msg_block.get("text") or 
@@ -160,7 +186,6 @@ async def max_webhook(request: Request):
             ""
         )
           
-        # Безопасный поиск ID пользователя или чата
         chat_id = (
             msg_block.get("chat_id") or 
             msg_block.get("sender", {}).get("user_id") or 
