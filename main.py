@@ -18,9 +18,7 @@ with open('faq_data.json', 'r', encoding='utf-8') as f:
 print("База знаний успешно загружена в память!")
 
 def find_best_match(user_message: str) -> str:
-    """Легковесный поиск по совпадению слов без тяжелых библиотек"""
     user_words = set(user_message.lower().split())
-    # Убираем слишком короткие слова
     user_words = {w for w in user_words if len(w) > 2}
     
     if not user_words:
@@ -34,17 +32,14 @@ def find_best_match(user_message: str) -> str:
         a_words = set(item['answer'].lower().split())
         item_words = q_words.union(a_words)
         
-        # Считаем количество общих слов
         score = len(user_words.intersection(item_words))
         if score > best_score:
             best_score = score
             best_item = item
             
-    # Если нашли хоть какое-то пересечение, возвращаем его, иначе берем первые элементы
     if best_score > 0:
         return f"Вопрос: {best_item['question']}\nОтвет: {best_item['answer']}"
     else:
-        # Возвращаем общую информацию, если ничего не нашлось
         return f"Вопрос: {faq_data[0]['question']}\nОтвет: {faq_data[0]['answer']}"
 
 def get_groq_answer(user_message: str) -> str:
@@ -88,11 +83,14 @@ def send_message_to_max(chat_id: str, text: str):
 def root():
     return {"status": "RGSU Bot is running online!"}
 
-@app.post("/webhook")
+# Обрабатываем и GET (для проверки связи от МАКС), и POST (для сообщений)
+@app.api_route("/webhook", methods=["GET", "POST"])
 async def max_webhook(request: Request):
-    data = await request.json()
+    if request.method == "GET":
+        return {"status": "Webhook is active and ready for POST requests!"}
     
     try:
+        data = await request.json()
         message_obj = data.get("message", {})
         message_text = message_obj.get("text", "")
         chat_id = message_obj.get("chat_id", "")
