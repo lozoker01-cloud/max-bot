@@ -1,43 +1,54 @@
 import os
 import json
-import faiss
 import requests
 from fastapi import FastAPI, Request
 from groq import Groq
-from sentence_transformers import SentenceTransformer
 
-# Переменные окружения (зададим их в панели Render)
+# Переменные окружения
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
-MAX_API_URL = "https://platform-api.max.ru/v1/messages/send"  # Уточнить по API MAX
+MAX_API_URL = "https://platform-api.max.ru/v1/messages/send"
 
 app = FastAPI()
-
-# Инициализация Groq
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# Загрузка векторной модели и базы
-print("Загрузка модели поиска...")
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
-
+print("Загрузка базы знаний...")
 with open('faq_data.json', 'r', encoding='utf-8') as f:
     faq_data = json.load(f)
+print("База знаний успешно загружена в память!")
 
-faq_texts = [f"Вопрос: {item['question']}\nОтвет: {item['answer']}" for item in faq_data]
-embeddings = embedder.encode(faq_texts)
-dimension = embeddings.shape[1]
-
-index = faiss.IndexFlatL2(dimension)
-index.add(embeddings)
-print("Векторная база готова!")
-
+def find_best_match(user_message: str) -> str:
+    """Легковесный поиск по совпадению слов без тяжелых библиотек"""
+    user_words = set(user_message.lower().split())
+    # Убираем слишком короткие слова
+    user_words = {w for w in user_words if len(w) > 2}
+    
+    if not user_words:
+        return faq_data[0]['answer']
+    
+    best_score = 0
+    best_item = faq_data[0]
+    
+    for item in faq_data:
+        q_words = set(item['question'].lower().split())
+        a_words = set(item['answer'].lower().split())
+        item_words = q_words.union(a_words)
+        
+        # Считаем количество общих слов
+        score = len(user_words.intersection(item_words))
+        if score > best_score:
+            best_score = score
+            best_item = item
+            
+    # Если нашли хоть какое-то пересечение, возвращаем его, иначе берем первые элементы
+    if best_score > 0:
+        return f"Вопрос: {best_item['question']}\nОтвет: {best_item['answer']}"
+    else:
+        # Возвращаем общую информацию, если ничего не нашлось
+        return f"Вопрос: {faq_data[0]['question']}\nОтвет: {faq_data[0]['answer']}"
 
 def get_groq_answer(user_message: str) -> str:
-    # Поиск 2 самых релевантных совпадений из скрипта
-    query_vector = embedder.encode([user_message])
-    distances, indices = index.search(query_vector, 2)
-    
-    retrieved_context = "\n\n".join([faq_texts[i] for i in indices[0] if i < len(faq_texts)])
+    retrieved_context = find_best_match(user_message)
     
     system_prompt = (
         "Ты вежливый и компетентный ассистент приемной комиссии РГСУ. "
@@ -57,7 +68,6 @@ def get_groq_answer(user_message: str) -> str:
     )
     return response.choices[0].message.content
 
-
 def send_message_to_max(chat_id: str, text: str):
     if not MAX_BOT_TOKEN:
         return
@@ -74,18 +84,15 @@ def send_message_to_max(chat_id: str, text: str):
     except Exception as e:
         print(f"Ошибка отправки сообщения: {e}")
 
-
 @app.get("/")
 def root():
     return {"status": "RGSU Bot is running online!"}
-
 
 @app.post("/webhook")
 async def max_webhook(request: Request):
     data = await request.json()
     
     try:
-        # Структура входящего Webhook от MAX
         message_obj = data.get("message", {})
         message_text = message_obj.get("text", "")
         chat_id = message_obj.get("chat_id", "")
