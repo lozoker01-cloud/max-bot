@@ -15,27 +15,35 @@ MAX_API_BASE = "https://platform-api2.max.ru"
 app = FastAPI()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-print("Загрузка базы знаний...")
+print("Загрузка базы знаний (FAQ)...")
 try:
     with open('faq_data.json', 'r', encoding='utf-8') as f:
         faq_raw = json.load(f)
-    print("База знаний успешно загружена!")
+    print("FAQ успешно загружен!")
 except Exception as e:
     print(f"Ошибка загрузки faq_data.json: {e}")
     faq_raw = {}
 
-# Функция для превращения вложенных категорий в плоский список вопросов
+# Загрузка правил приема (если файл есть)
+print("Загрузка правил приема...")
+pravila_text = ""
+try:
+    with open('pravila.txt', 'r', encoding='utf-8') as f:
+        pravila_text = f.read()
+    print("Правила приема успешно загружены!")
+except Exception as e:
+    print(f"Файл pravila.txt не найден или ошибка чтения (это не критично): {e}")
+
+# Функция для распаковки категорий FAQ в плоский список
 def flatten_faq(data):
     flat_list = []
     if isinstance(data, dict):
-        # Если это структура с ключом "categories"
         if "categories" in data:
             for cat in data["categories"]:
                 if isinstance(cat, dict) and "items" in cat:
                     for item in cat["items"]:
                         if isinstance(item, dict):
                             flat_list.append(item)
-        # Если это просто словарь с вопросами
         elif "question" in data:
             flat_list.append(data)
         else:
@@ -80,50 +88,56 @@ def register_webhook():
 def startup_event():
     register_webhook()
 
-def find_best_match(user_message: str) -> str:
+def find_top_matches(user_message: str, top_n: int = 3) -> str:
+    """Ищет несколько наиболее подходящих вопросов из FAQ по ключевым словам"""
     global faq_items
     if not faq_items:
-        return "Вопрос: Консультация\nОтвет: Обратитесь в приемную комиссию РГСУ по телефону +7-495-255-67-67."
+        return "База FAQ пуста."
 
     user_words = set(user_message.lower().split())
+    # Игнорируем слишком короткие слова
     user_words = {w for w in user_words if len(w) > 2}
     
-    first_item = faq_items[0]
-
     if not user_words:
-        return f"Вопрос: {first_item.get('question', '')}\nОтвет: {first_item.get('answer', '')}"
-      
-    best_score = 0
-    best_item = first_item
-    
+        # Если слов нет, возвращаем первые элементы
+        res = []
+        for item in faq_items[:top_n]:
+            res.append(f"Вопрос: {item.get('question', '')}\nОтвет: {item.get('answer', '')}")
+        return "\n\n".join(res)
+
+    scored_items = []
     for item in faq_items:
         if not isinstance(item, dict):
             continue
         q_text = item.get('question', '')
         a_text = item.get('answer', '')
         
-        q_words = set(q_text.lower().split())
-        a_words = set(a_text.lower().split())
-        item_words = q_words.union(a_words)
-        
+        item_words = set(q_text.lower().split()).union(set(a_text.lower().split()))
         score = len(user_words.intersection(item_words))
-        if score > best_score:
-            best_score = score
-            best_item = item
-              
-    if best_score > 0:
-        return f"Вопрос: {best_item.get('question', '')}\nОтвет: {best_item.get('answer', '')}"
-    else:
-        # Если точных совпадений нет, возвращаем первый вопрос или общую информацию
-        return f"Вопрос: {first_item.get('question', '')}\nОтвет: {first_item.get('answer', '')}"
+        scored_items.append((score, item))
+
+    # Сортируем по релевантности (по количеству совпавших слов)
+    scored_items.sort(key=lambda x: x[0], reverse=True)
+    
+    top_matches = []
+    for score, item in scored_items[:top_n]:
+        top_matches.append(f"Вопрос: {item.get('question', '')}\nОтвет: {item.get('answer', '')}")
+
+    return "\n\n---\n\n".join(top_matches)
 
 def get_groq_answer(user_message: str) -> str:
-    retrieved_context = find_best_match(user_message)
+    retrieved_faq = find_top_matches(user_message, top_n=3)
+    
+    # Формируем мощный системный промпт, объединяющий FAQ и официальные правила
     system_prompt = (
-        "Ты вежливый и компетентный ассистент приемной комиссии РГСУ. "
-        "Твоя задача — консультировать абитуриентов ТОЛЬКО на основе предоставленного контекста. "
-        "Не придумывай информацию. Если ответа нет в контексте, отправь контакты ПК РГСУ: +7-495-255-67-67.\n\n"
-        f"КОНТЕКСТ ИЗ БАЗЫ ЗНАНИЙ:\n{retrieved_context}"
+        "Ты — официальный, умный и вежливый цифровой ассистент приемной комиссии РГСУ (Российского государственного социального университета). "
+        "Твоя задача — давать точные, развернутые и понятные ответы абитуриентам.\n"
+        "Используй информацию из базы Частых Вопросов (FAQ) и Официальных Правил Приема ниже.\n"
+        "Если пользователь спрашивает своими словами (например, про поступление после школы без ЕГЭ или про индивидуальные достижения), "
+        "проанализируй контекст и дай логичный ответ на основе правил. Не придумывай лишнего, но объясняй дружелюбно.\n"
+        "Если в предоставленном контексте абсолютно нет информации для ответа, вежливо сообщи об этом и дай контакты приемной комиссии РГСУ: +7-495-255-67-67, почта pk@rgsu.net.\n\n"
+        f"=== ЧАСТЫЕ ВОПРОСЫ (FAQ) ===\n{retrieved_faq}\n\n"
+        f"=== ОФИЦИАЛЬНЫЕ ПРАВИЛА ПРИЕМА И ДОПОЛНИТЕЛЬНАЯ ИНФОРМАЦИЯ ===\n{pravila_text[:3000]}"
     )
       
     response = groq_client.chat.completions.create(
@@ -132,8 +146,8 @@ def get_groq_answer(user_message: str) -> str:
             {"role": "user", "content": user_message}
         ],
         model="openai/gpt-oss-120b",
-        temperature=0.2,
-        max_tokens=350
+        temperature=0.3,
+        max_tokens=400
     )
     return response.choices[0].message.content
 
@@ -173,10 +187,6 @@ async def max_webhook(request: Request):
         body_bytes = await request.body()
         data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
           
-        print("=== ПОЛНЫЙ JSON ОТ МАКС ===")
-        print(json.dumps(data, ensure_ascii=False, indent=2))
-        print("============================")
-          
         msg_block = data.get("message", {})
           
         message_text = (
@@ -207,7 +217,6 @@ async def max_webhook(request: Request):
                         break
 
         if not message_text or not chat_id:
-            print(f"Пропуск: текст='{message_text}', chat_id='{chat_id}'")
             return {"status": "ok"}
 
         print(f"УСПЕХ! ID получателя: {chat_id}, Текст: {message_text}")
@@ -217,7 +226,6 @@ async def max_webhook(request: Request):
             send_message_to_max(str(chat_id), reply)
             return {"status": "ok"}
 
-        # Генерация ответа через модель Groq и отправка в МАКС
         bot_reply = get_groq_answer(message_text)
         send_message_to_max(str(chat_id), bot_reply)
           
