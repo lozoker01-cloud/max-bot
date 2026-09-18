@@ -4,9 +4,12 @@ import requests
 from fastapi import FastAPI, Request
 from groq import Groq
 
+# Переменные окружения
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
-MAX_API_URL = "https://platform-api.max.ru/v1/messages/send"
+
+# Актуальный домен и эндпоинт из официальной документации МАКС
+MAX_API_URL = "https://platform-api2.max.ru/messages"
 
 app = FastAPI()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
@@ -61,16 +64,22 @@ def send_message_to_max(chat_id: str, text: str):
     if not MAX_BOT_TOKEN:
         print("Ошибка: MAX_BOT_TOKEN не задан!")
         return
+    
+    # Согласно документации: Authorization: <token>
     headers = {
-        "Authorization": f"Bearer {MAX_BOT_TOKEN}",
+        "Authorization": f"{MAX_BOT_TOKEN}",
         "Content-Type": "application/json"
     }
+    
+    # Передаем chat_id и в query, и в body для надежности
+    params = {"chat_id": chat_id}
     payload = {
         "chat_id": chat_id,
         "text": text
     }
+    
     try:
-        res = requests.post(MAX_API_URL, headers=headers, json=payload, timeout=5)
+        res = requests.post(MAX_API_URL, headers=headers, params=params, json=payload, timeout=5)
         print(f"Ответ от МАКС API: {res.status_code} {res.text}")
     except Exception as e:
         print(f"Ошибка отправки сообщения в МАКС: {e}")
@@ -86,18 +95,28 @@ async def max_webhook(request: Request):
     
     try:
         data = await request.json()
-        # ЛОГИРУЕМ ВСЁ, ЧТО ПРИХОДИТ ОТ МАКС, ЧТОБЫ УВИДЕТЬ СТРУКТУРУ
         print("--- ВХОДЯЩИЙ ЗАПРОС ОТ МАКС ---")
         print(json.dumps(data, ensure_ascii=False, indent=2))
         print("--------------------------------")
         
-        # Универсальный поиск текста и ID чата в разных возможных ключах
-        message_text = data.get("text", data.get("message", {}).get("text", data.get("body", "")))
-        chat_id = data.get("chat_id", data.get("message", {}).get("chat_id", data.get("from", {}).get("id", "")))
+        # Гибкое извлечение текста и chat_id под разные типы объектов Update
+        message_text = (
+            data.get("text") or 
+            data.get("message", {}).get("text") or 
+            data.get("body", {}).get("text") or 
+            data.get("message", {}).get("body", {}).get("text") or
+            ""
+        )
+        chat_id = (
+            data.get("chat_id") or 
+            data.get("message", {}).get("chat_id") or 
+            data.get("from", {}).get("id") or 
+            data.get("message", {}).get("sender", {}).get("id") or
+            ""
+        )
         
-        if not message_text:
-            # Если текст в другом месте, пробуем вытащить хоть что-то
-            print("Внимание: текст сообщения не найден стандартным путем.")
+        if not message_text or not chat_id:
+            print("Не удалось извлечь текст или chat_id из запроса.")
             return {"status": "ok"}
 
         if message_text.lower() == "/start":
