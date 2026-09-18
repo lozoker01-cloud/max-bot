@@ -16,9 +16,13 @@ app = FastAPI()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 print("Загрузка базы знаний...")
-with open('faq_data.json', 'r', encoding='utf-8') as f:
-    faq_data = json.load(f)
-print("База знаний успешно загружена!")
+try:
+    with open('faq_data.json', 'r', encoding='utf-8') as f:
+        faq_data = json.load(f)
+    print("База знаний успешно загружена!")
+except Exception as e:
+    print(f"Ошибка загрузки faq_data.json: {e}")
+    faq_data = []
 
 def register_webhook():
     if not MAX_BOT_TOKEN:
@@ -46,16 +50,35 @@ def startup_event():
     register_webhook()
 
 def find_best_match(user_message: str) -> str:
+    global faq_data
+    # Безопасное приведение faq_data к списку на случай, если это словарь
+    if isinstance(faq_data, dict):
+        if "question" in faq_data:
+            faq_data = [faq_data]
+        else:
+            faq_data = list(faq_data.values())
+
+    if not faq_data:
+        return "Вопрос: Консультация\nОтвет: Обратитесь в приемную комиссию РГСУ."
+
     user_words = set(user_message.lower().split())
     user_words = {w for w in user_words if len(w) > 2}
+    
+    first_item = faq_data[0] if isinstance(faq_data, list) and len(faq_data) > 0 else {"question": "", "answer": "Информация отсутствует."}
+    if not isinstance(first_item, dict):
+        first_item = {"question": str(first_item), "answer": str(first_item)}
+
     if not user_words:
-        return faq_data[0]['answer']
+        return f"Вопрос: {first_item.get('question', '')}\nОтвет: {first_item.get('answer', '')}"
       
     best_score = 0
-    best_item = faq_data[0]
+    best_item = first_item
+    
     for item in faq_data:
-        q_words = set(item['question'].lower().split())
-        a_words = set(item['answer'].lower().split())
+        if not isinstance(item, dict):
+            continue
+        q_words = set(item.get('question', '').lower().split())
+        a_words = set(item.get('answer', '').lower().split())
         item_words = q_words.union(a_words)
         score = len(user_words.intersection(item_words))
         if score > best_score:
@@ -63,9 +86,9 @@ def find_best_match(user_message: str) -> str:
             best_item = item
               
     if best_score > 0:
-        return f"Вопрос: {best_item['question']}\nОтвет: {best_item['answer']}"
+        return f"Вопрос: {best_item.get('question', '')}\nОтвет: {best_item.get('answer', '')}"
     else:
-        return f"Вопрос: {faq_data[0]['question']}\nОтвет: {faq_data[0]['answer']}"
+        return f"Вопрос: {first_item.get('question', '')}\nОтвет: {first_item.get('answer', '')}"
 
 def get_groq_answer(user_message: str) -> str:
     retrieved_context = find_best_match(user_message)
