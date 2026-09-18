@@ -51,7 +51,6 @@ def startup_event():
 
 def find_best_match(user_message: str) -> str:
     global faq_data
-    # Безопасное приведение faq_data к списку на случай, если это словарь
     if isinstance(faq_data, dict):
         if "question" in faq_data:
             faq_data = [faq_data]
@@ -110,7 +109,7 @@ def get_groq_answer(user_message: str) -> str:
     )
     return response.choices[0].message.content
 
-def send_message_to_max(chat_id: str, text: str):
+def send_message_to_max(target_id: str, text: str):
     if not MAX_BOT_TOKEN:
         print("Ошибка: MAX_BOT_TOKEN пустой!")
         return
@@ -118,16 +117,21 @@ def send_message_to_max(chat_id: str, text: str):
         "Authorization": f"{MAX_BOT_TOKEN}",
         "Content-Type": "application/json"
     }
-    params = {"chat_id": chat_id}
-    payload = {
-        "chat_id": chat_id,
-        "text": text
-    }
-    try:
-        res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params=params, json=payload, verify=False, timeout=5)
-        print(f"Ответ МАКС при отправке сообщения: {res.status_code} {res.text}")
-    except Exception as e:
-        print(f"Ошибка отправки сообщения в МАКС: {e}")
+    
+    # Универсальная отправка: сначала пробуем user_id (для личных чатов), затем chat_id (для групп)
+    for id_param in ["user_id", "chat_id"]:
+        params = {id_param: target_id}
+        payload = {
+            id_param: target_id,
+            "text": text
+        }
+        try:
+            res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params=params, json=payload, verify=False, timeout=5)
+            print(f"Ответ МАКС при отправке ({id_param}): {res.status_code} {res.text}")
+            if res.status_code == 200:
+                break
+        except Exception as e:
+            print(f"Ошибка отправки сообщения в МАКС ({id_param}): {e}")
 
 @app.get("/")
 def root():
@@ -156,7 +160,7 @@ async def max_webhook(request: Request):
             ""
         )
           
-        # Безопасный поиск chat_id под структуру МАКС
+        # Безопасный поиск ID пользователя или чата
         chat_id = (
             msg_block.get("chat_id") or 
             msg_block.get("sender", {}).get("user_id") or 
@@ -167,7 +171,6 @@ async def max_webhook(request: Request):
             ""
         )
           
-        # Если chat_id пустой, ищем идентификатор вложенного объекта
         if not chat_id and isinstance(msg_block, dict):
             for k, v in msg_block.items():
                 if isinstance(v, dict):
@@ -182,7 +185,7 @@ async def max_webhook(request: Request):
             print(f"Пропуск: текст='{message_text}', chat_id='{chat_id}'")
             return {"status": "ok"}
 
-        print(f"УСПЕХ! Чат: {chat_id}, Текст: {message_text}")
+        print(f"УСПЕХ! ID получателя: {chat_id}, Текст: {message_text}")
 
         if message_text.lower() == "/start":
             reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении!"
