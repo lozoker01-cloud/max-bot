@@ -86,7 +86,7 @@ def get_groq_answer(user_message: str) -> str:
     )
     return response.choices[0].message.content
 
-def send_message_to_max(chat_id: str, text: str):
+def send_message_to_max(chat_id: str, text: str, user_id: str = None):
     if not MAX_BOT_TOKEN:
         print("Ошибка: MAX_BOT_TOKEN пустой!")
         return
@@ -94,13 +94,17 @@ def send_message_to_max(chat_id: str, text: str):
         "Authorization": f"{MAX_BOT_TOKEN}",
         "Content-Type": "application/json"
     }
-    params = {"chat_id": chat_id}
+    
+    # Согласно актуальной документации МАКС, отправляем recipient с chat_id или user_id
     payload = {
-        "chat_id": chat_id,
-        "text": text
+        "text": text,
+        "recipient": {
+            "chat_id": int(chat_id) if chat_id.isdigit() else chat_id
+        }
     }
+    
     try:
-        res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params=params, json=payload, verify=False, timeout=5)
+        res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, json=payload, verify=False, timeout=5)
         print(f"Ответ МАКС при отправке сообщения: {res.status_code} {res.text}")
     except Exception as e:
         print(f"Ошибка отправки сообщения в МАКС: {e}")
@@ -118,10 +122,6 @@ async def max_webhook(request: Request):
         body_bytes = await request.body()
         data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
         
-        print("=== ПОЛНЫЙ JSON ОТ МАКС ===")
-        print(json.dumps(data, ensure_ascii=False, indent=2))
-        print("============================")
-        
         msg_block = data.get("message", {})
         
         # Извлекаем текст
@@ -132,28 +132,15 @@ async def max_webhook(request: Request):
             ""
         )
         
-        # Точный поиск chat_id под все варианты структуры МАКС
+        # Ищем правильный идентификатор чата из структуры МАКС (chat_id или sender id)
         chat_id = (
             msg_block.get("chat_id") or 
-            msg_block.get("sender", {}).get("user_id") or 
-            msg_block.get("sender", {}).get("id") or 
             msg_block.get("recipient", {}).get("chat_id") or
+            msg_block.get("sender", {}).get("id") or 
             data.get("chat_id") or 
-            data.get("user_id") or
             ""
         )
         
-        # Если chat_id всё еще пустой, ищем любое поле с id в словаре message
-        if not chat_id and isinstance(msg_block, dict):
-            for k, v in msg_block.items():
-                if isinstance(v, dict):
-                    if "id" in v:
-                        chat_id = v["id"]
-                        break
-                    if "user_id" in v:
-                        chat_id = v["user_id"]
-                        break
-
         if not message_text or not chat_id:
             print(f"Пропуск: текст='{message_text}', chat_id='{chat_id}'")
             return {"status": "ok"}
@@ -165,7 +152,7 @@ async def max_webhook(request: Request):
             send_message_to_max(str(chat_id), reply)
             return {"status": "ok"}
 
-        # Генерация ответа через модель Groq и отправка в МАКС
+        # Генерация ответа через Groq по нашему JSON и отправка
         bot_reply = get_groq_answer(message_text)
         send_message_to_max(str(chat_id), bot_reply)
         
