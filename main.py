@@ -115,51 +115,44 @@ async def max_webhook(request: Request):
         return {"status": "Webhook is active!"}
     
     try:
-        # Получаем сырой JSON от МАКС
         body_bytes = await request.body()
         data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
         
-        print("=== СЫРЫЕ ДАННЫЕ ОТ МАКС ===")
-        print(json.dumps(data, ensure_ascii=False, indent=2))
-        print("============================")
+        # Точное извлечение под структуру JSON из логов МАКС
+        msg_block = data.get("message", {})
         
-        # Максимально надежный поиск текста и chat_id
+        # Ищем текст сообщения
         message_text = (
+            msg_block.get("body", {}).get("text") or 
+            msg_block.get("text") or 
             data.get("text") or 
-            data.get("message", {}).get("text") or 
-            data.get("body", {}).get("text") or 
-            data.get("message", {}).get("body", {}).get("text") or
-            data.get("object", {}).get("text") or
-            data.get("object", {}).get("message", {}).get("text") or
             ""
         )
         
+        # Ищем chat_id
         chat_id = (
+            msg_block.get("chat_id") or 
+            msg_block.get("sender", {}).get("id") or 
             data.get("chat_id") or 
-            data.get("message", {}).get("chat_id") or 
-            data.get("from", {}).get("id") or 
-            data.get("message", {}).get("sender", {}).get("id") or 
-            data.get("object", {}).get("chat_id") or
-            data.get("object", {}).get("sender", {}).get("id") or
             ""
         )
         
         if not message_text or not chat_id:
-            print("Предупреждение: не удалось найти text или chat_id в объекте.")
+            print(f"Пропуск: текст='{message_text}', chat_id='{chat_id}'")
             return {"status": "ok"}
 
-        print(f"Получено сообщение от chat_id {chat_id}: {message_text}")
+        print(f"Успешно поймано! Чат: {chat_id}, Текст: {message_text}")
 
         if message_text.lower() == "/start":
             reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении!"
             send_message_to_max(str(chat_id), reply)
             return {"status": "ok"}
 
-        # Генерируем ответ через Groq и отправляем назад
+        # Обращаемся к Groq через твою модель и шлем ответ абитуриенту
         bot_reply = get_groq_answer(message_text)
         send_message_to_max(str(chat_id), bot_reply)
         
     except Exception as e:
-        print(f"КРИТИЧЕСКАЯ ОШИБКА В WEBHOOK: {e}")
+        print(f"ОШИБКА В WEBHOOK: {e}")
         
     return {"status": "ok"}
