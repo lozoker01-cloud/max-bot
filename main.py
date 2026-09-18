@@ -25,7 +25,7 @@ def register_webhook():
     render_url = os.getenv("RENDER_EXTERNAL_URL")
     if not render_url:
         return
-    
+      
     webhook_url = f"{render_url}/webhook"
     headers = {
         "Authorization": f"{MAX_BOT_TOKEN}",
@@ -44,58 +44,45 @@ def register_webhook():
 def startup_event():
     register_webhook()
 
-def find_best_matches(user_message: str, top_k: int = 3) -> str:
-    """Ищет несколько наиболее подходящих по смыслу/ключевым словам вопросов в базе знаний"""
+def find_best_match(user_message: str) -> str:
     user_words = set(user_message.lower().split())
-    # Убираем слишком короткие слова
     user_words = {w for w in user_words if len(w) > 2}
-    
     if not user_words:
-        return f"Вопрос: {faq_data[0]['question']}\nОтвет: {faq_data[0]['answer']}"
-    
-    scored_items = []
+        return faq_data[0]['answer']
+      
+    best_score = 0
+    best_item = faq_data[0]
     for item in faq_data:
         q_words = set(item['question'].lower().split())
         a_words = set(item['answer'].lower().split())
         item_words = q_words.union(a_words)
-        
         score = len(user_words.intersection(item_words))
-        scored_items.append((score, item))
-    
-    # Сортируем по убыванию релевантности
-    scored_items.sort(key=lambda x: x[0], reverse=True)
-    
-    # Берем топ-к результатов с ненулевым совпадением (или хотя бы лучшие)
-    best_matches = [item for score, item in scored_items[:top_k] if score > 0]
-    
-    if not best_matches:
-        # Если совпадений нет вообще, возвращаем общую информацию
-        best_matches = [faq_data[0]]
-        
-    context_text = ""
-    for idx, item in enumerate(best_matches, 1):
-        context_text += f"Фрагмент {idx}:\nВопрос: {item['question']}\nОтвет: {item['answer']}\n\n"
-        
-    return context_text
+        if score > best_score:
+            best_score = score
+            best_item = item
+              
+    if best_score > 0:
+        return f"Вопрос: {best_item['question']}\nОтвет: {best_item['answer']}"
+    else:
+        return f"Вопрос: {faq_data[0]['question']}\nОтвет: {faq_data[0]['answer']}"
 
 def get_groq_answer(user_message: str) -> str:
-    retrieved_context = find_best_matches(user_message, top_k=3)
+    retrieved_context = find_best_match(user_message)
     system_prompt = (
-        "Ты вежливый и компетентный цифровой ассистент приемной комиссии РГСУ. "
-        "Твоя задача — консультировать абитуриентов своими словами на основе предоставленных фрагментов из базы знаний. "
-        "Пользователи могут задавать вопросы в свободной форме (с синонимами, сленгом или неточностями). Твоя цель — понять суть вопроса, сопоставить с контекстом и дать развернутый, точный ответ. "
-        "Не придумывай информацию, которой нет в контексте. Если точного ответа в контексте нет, вежливо предложи обратиться в приемную комиссию РГСУ по телефону: +7-495-255-67-67.\n\n"
-        f"БАЗА ЗНАНИЙ (ФРАГМЕНТЫ):\n{retrieved_context}"
+        "Ты вежливый и компетентный ассистент приемной комиссии РГСУ. "
+        "Твоя задача — консультировать абитуриентов ТОЛЬКО на основе предоставленного контекста. "
+        "Не придумывай информацию. Если ответа нет в контексте, отправь контакты ПК РГСУ: +7-495-255-67-67.\n\n"
+        f"КОНТЕКСТ ИЗ БАЗЫ ЗНАНИЙ:\n{retrieved_context}"
     )
-    
+      
     response = groq_client.chat.completions.create(
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
         ],
         model="openai/gpt-oss-120b",
-        temperature=0.3,
-        max_tokens=400
+        temperature=0.2,
+        max_tokens=350
     )
     return response.choices[0].message.content
 
@@ -107,14 +94,13 @@ def send_message_to_max(chat_id: str, text: str):
         "Authorization": f"{MAX_BOT_TOKEN}",
         "Content-Type": "application/json"
     }
-    
+    params = {"chat_id": chat_id}
     payload = {
-        "text": text,
-        "chat_id": chat_id
+        "chat_id": chat_id,
+        "text": text
     }
-    
     try:
-        res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params={"chat_id": chat_id}, json=payload, verify=False, timeout=5)
+        res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params=params, json=payload, verify=False, timeout=5)
         print(f"Ответ МАКС при отправке сообщения: {res.status_code} {res.text}")
     except Exception as e:
         print(f"Ошибка отправки сообщения в МАКС: {e}")
@@ -127,28 +113,47 @@ def root():
 async def max_webhook(request: Request):
     if request.method == "GET":
         return {"status": "Webhook is active!"}
-    
+      
     try:
         body_bytes = await request.body()
         data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
-        
+          
+        print("=== ПОЛНЫЙ JSON ОТ МАКС ===")
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        print("============================")
+          
         msg_block = data.get("message", {})
-        
+          
+        # Извлекаем текст
         message_text = (
             msg_block.get("body", {}).get("text") or 
             msg_block.get("text") or 
             data.get("text") or 
             ""
         )
-        
+          
+        # Безопасный поиск chat_id под структуру МАКС
         chat_id = (
             msg_block.get("chat_id") or 
-            msg_block.get("recipient", {}).get("chat_id") or
+            msg_block.get("sender", {}).get("user_id") or 
             msg_block.get("sender", {}).get("id") or 
+            msg_block.get("recipient", {}).get("chat_id") or
             data.get("chat_id") or 
+            data.get("user_id") or 
             ""
         )
-        
+          
+        # Если chat_id пустой, ищем идентификатор вложенного объекта
+        if not chat_id and isinstance(msg_block, dict):
+            for k, v in msg_block.items():
+                if isinstance(v, dict):
+                    if "id" in v:
+                        chat_id = v["id"]
+                        break
+                    if "user_id" in v:
+                        chat_id = v["user_id"]
+                        break
+
         if not message_text or not chat_id:
             print(f"Пропуск: текст='{message_text}', chat_id='{chat_id}'")
             return {"status": "ok"}
@@ -156,15 +161,15 @@ async def max_webhook(request: Request):
         print(f"УСПЕХ! Чат: {chat_id}, Текст: {message_text}")
 
         if message_text.lower() == "/start":
-            reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, баллах, общежитии или документах!"
+            reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении!"
             send_message_to_max(str(chat_id), reply)
             return {"status": "ok"}
 
-        # Умная генерация ответа через Groq с использованием топ-3 релевантных фрагментов
+        # Генерация ответа через модель Groq и отправка в МАКС
         bot_reply = get_groq_answer(message_text)
         send_message_to_max(str(chat_id), bot_reply)
-        
+          
     except Exception as e:
         print(f"ОШИБКА В WEBHOOK: {e}")
-        
+          
     return {"status": "ok"}
