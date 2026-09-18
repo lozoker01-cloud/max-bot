@@ -118,10 +118,13 @@ async def max_webhook(request: Request):
         body_bytes = await request.body()
         data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
         
-        # Точное извлечение под структуру JSON из логов МАКС
+        print("=== ПОЛНЫЙ JSON ОТ МАКС ===")
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        print("============================")
+        
         msg_block = data.get("message", {})
         
-        # Ищем текст сообщения
+        # Извлекаем текст
         message_text = (
             msg_block.get("body", {}).get("text") or 
             msg_block.get("text") or 
@@ -129,26 +132,40 @@ async def max_webhook(request: Request):
             ""
         )
         
-        # Ищем chat_id
+        # Точный поиск chat_id под все варианты структуры МАКС
         chat_id = (
             msg_block.get("chat_id") or 
+            msg_block.get("sender", {}).get("user_id") or 
             msg_block.get("sender", {}).get("id") or 
+            msg_block.get("recipient", {}).get("chat_id") or
             data.get("chat_id") or 
+            data.get("user_id") or
             ""
         )
         
+        # Если chat_id всё еще пустой, ищем любое поле с id в словаре message
+        if not chat_id and isinstance(msg_block, dict):
+            for k, v in msg_block.items():
+                if isinstance(v, dict):
+                    if "id" in v:
+                        chat_id = v["id"]
+                        break
+                    if "user_id" in v:
+                        chat_id = v["user_id"]
+                        break
+
         if not message_text or not chat_id:
             print(f"Пропуск: текст='{message_text}', chat_id='{chat_id}'")
             return {"status": "ok"}
 
-        print(f"Успешно поймано! Чат: {chat_id}, Текст: {message_text}")
+        print(f"УСПЕХ! Чат: {chat_id}, Текст: {message_text}")
 
         if message_text.lower() == "/start":
             reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении!"
             send_message_to_max(str(chat_id), reply)
             return {"status": "ok"}
 
-        # Обращаемся к Groq через твою модель и шлем ответ абитуриенту
+        # Генерация ответа через модель Groq и отправка в МАКС
         bot_reply = get_groq_answer(message_text)
         send_message_to_max(str(chat_id), bot_reply)
         
