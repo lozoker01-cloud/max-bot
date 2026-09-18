@@ -1,13 +1,16 @@
 import os
 import json
 import requests
+import urllib3
 from fastapi import FastAPI, Request
 from groq import Groq
+
+# Отключаем предупреждения об отключенном SSL для чистоты логов
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 
-# Базовый URL API МАКС из документации
 MAX_API_BASE = "https://platform-api2.max.ru"
 
 app = FastAPI()
@@ -19,10 +22,9 @@ with open('faq_data.json', 'r', encoding='utf-8') as f:
 print("База знаний успешно загружена!")
 
 def register_webhook():
-    """Автоматическая регистрация вебхука в МАКС при запуске сервера"""
+    """Автоматическая регистрация вебхука в МАКС с отключенной проверкой SSL Минцифры"""
     if not MAX_BOT_TOKEN:
         return
-    # Получаем публичный URL сервиса (на Render он доступен через переменную RENDER_EXTERNAL_URL)
     render_url = os.getenv("RENDER_EXTERNAL_URL")
     if not render_url:
         print("RENDER_EXTERNAL_URL не найден, авторегистрация пропущена.")
@@ -38,7 +40,8 @@ def register_webhook():
         "update_types": ["message_created", "message_callback"]
     }
     try:
-        res = requests.post(f"{MAX_API_BASE}/subscriptions", headers=headers, json=payload, timeout=10)
+        # verify=False обходит проблему с сертификатами Минцифры на внешних хостингах
+        res = requests.post(f"{MAX_API_BASE}/subscriptions", headers=headers, json=payload, verify=False, timeout=10)
         print(f"Результат авторегистрации вебхука в МАКС: {res.status_code} {res.text}")
     except Exception as e:
         print(f"Ошибка при регистрации вебхука: {e}")
@@ -101,7 +104,8 @@ def send_message_to_max(chat_id: str, text: str):
         "text": text
     }
     try:
-        res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params=params, json=payload, timeout=5)
+        # verify=False для отправки сообщений через API МАКС
+        res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params=params, json=payload, verify=False, timeout=5)
         print(f"Ответ от МАКС API при отправке: {res.status_code} {res.text}")
     except Exception as e:
         print(f"Ошибка отправки сообщения в МАКС: {e}")
@@ -121,7 +125,6 @@ async def max_webhook(request: Request):
         print(json.dumps(data, ensure_ascii=False, indent=2))
         print("-------------------------------------")
         
-        # Извлекаем текст и chat_id из структуры message_created
         message_obj = data.get("object", data.get("message", data))
         message_text = message_obj.get("text", message_obj.get("body", {}).get("text", ""))
         chat_id = message_obj.get("chat_id", message_obj.get("from", {}).get("id", ""))
