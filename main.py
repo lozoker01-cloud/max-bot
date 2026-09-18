@@ -4,12 +4,11 @@ import requests
 from fastapi import FastAPI, Request
 from groq import Groq
 
-# Переменные окружения
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 
-# Актуальный домен и эндпоинт из официальной документации МАКС
-MAX_API_URL = "https://platform-api2.max.ru/messages"
+# Базовый URL API МАКС из документации
+MAX_API_BASE = "https://platform-api2.max.ru"
 
 app = FastAPI()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
@@ -18,6 +17,35 @@ print("Загрузка базы знаний...")
 with open('faq_data.json', 'r', encoding='utf-8') as f:
     faq_data = json.load(f)
 print("База знаний успешно загружена!")
+
+def register_webhook():
+    """Автоматическая регистрация вебхука в МАКС при запуске сервера"""
+    if not MAX_BOT_TOKEN:
+        return
+    # Получаем публичный URL сервиса (на Render он доступен через переменную RENDER_EXTERNAL_URL)
+    render_url = os.getenv("RENDER_EXTERNAL_URL")
+    if not render_url:
+        print("RENDER_EXTERNAL_URL не найден, авторегистрация пропущена.")
+        return
+    
+    webhook_url = f"{render_url}/webhook"
+    headers = {
+        "Authorization": f"{MAX_BOT_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "url": webhook_url,
+        "update_types": ["message_created", "message_callback"]
+    }
+    try:
+        res = requests.post(f"{MAX_API_BASE}/subscriptions", headers=headers, json=payload, timeout=10)
+        print(f"Результат авторегистрации вебхука в МАКС: {res.status_code} {res.text}")
+    except Exception as e:
+        print(f"Ошибка при регистрации вебхука: {e}")
+
+@app.on_event("startup")
+def startup_event():
+    register_webhook()
 
 def find_best_match(user_message: str) -> str:
     user_words = set(user_message.lower().split())
@@ -62,25 +90,19 @@ def get_groq_answer(user_message: str) -> str:
 
 def send_message_to_max(chat_id: str, text: str):
     if not MAX_BOT_TOKEN:
-        print("Ошибка: MAX_BOT_TOKEN не задан!")
         return
-    
-    # Согласно документации: Authorization: <token>
     headers = {
         "Authorization": f"{MAX_BOT_TOKEN}",
         "Content-Type": "application/json"
     }
-    
-    # Передаем chat_id и в query, и в body для надежности
     params = {"chat_id": chat_id}
     payload = {
         "chat_id": chat_id,
         "text": text
     }
-    
     try:
-        res = requests.post(MAX_API_URL, headers=headers, params=params, json=payload, timeout=5)
-        print(f"Ответ от МАКС API: {res.status_code} {res.text}")
+        res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params=params, json=payload, timeout=5)
+        print(f"Ответ от МАКС API при отправке: {res.status_code} {res.text}")
     except Exception as e:
         print(f"Ошибка отправки сообщения в МАКС: {e}")
 
@@ -95,28 +117,16 @@ async def max_webhook(request: Request):
     
     try:
         data = await request.json()
-        print("--- ВХОДЯЩИЙ ЗАПРОС ОТ МАКС ---")
+        print("--- ВХОДЯЩИЙ ПОСТ-ЗАПРОС ОТ МАКС ---")
         print(json.dumps(data, ensure_ascii=False, indent=2))
-        print("--------------------------------")
+        print("-------------------------------------")
         
-        # Гибкое извлечение текста и chat_id под разные типы объектов Update
-        message_text = (
-            data.get("text") or 
-            data.get("message", {}).get("text") or 
-            data.get("body", {}).get("text") or 
-            data.get("message", {}).get("body", {}).get("text") or
-            ""
-        )
-        chat_id = (
-            data.get("chat_id") or 
-            data.get("message", {}).get("chat_id") or 
-            data.get("from", {}).get("id") or 
-            data.get("message", {}).get("sender", {}).get("id") or
-            ""
-        )
+        # Извлекаем текст и chat_id из структуры message_created
+        message_obj = data.get("object", data.get("message", data))
+        message_text = message_obj.get("text", message_obj.get("body", {}).get("text", ""))
+        chat_id = message_obj.get("chat_id", message_obj.get("from", {}).get("id", ""))
         
-        if not message_text or not chat_id:
-            print("Не удалось извлечь текст или chat_id из запроса.")
+        if not message_text:
             return {"status": "ok"}
 
         if message_text.lower() == "/start":
