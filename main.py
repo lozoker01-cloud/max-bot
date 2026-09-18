@@ -5,12 +5,10 @@ import urllib3
 from fastapi import FastAPI, Request
 from groq import Groq
 
-# Отключаем предупреждения об отключенном SSL для запросов к API МАКС (сертификаты Минцифры)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
-
 MAX_API_BASE = "https://platform-api2.max.ru"
 
 app = FastAPI()
@@ -22,7 +20,6 @@ with open('faq_data.json', 'r', encoding='utf-8') as f:
 print("База знаний успешно загружена!")
 
 def register_webhook():
-    """Автоматическая регистрация вебхука в МАКС при старте сервера"""
     if not MAX_BOT_TOKEN:
         return
     render_url = os.getenv("RENDER_EXTERNAL_URL")
@@ -78,7 +75,6 @@ def get_groq_answer(user_message: str) -> str:
         f"КОНТЕКСТ ИЗ БАЗЫ ЗНАНИЙ:\n{retrieved_context}"
     )
     
-    # Используем модель, указанную тобой
     response = groq_client.chat.completions.create(
         messages=[
             {"role": "system", "content": system_prompt},
@@ -92,6 +88,7 @@ def get_groq_answer(user_message: str) -> str:
 
 def send_message_to_max(chat_id: str, text: str):
     if not MAX_BOT_TOKEN:
+        print("Ошибка: MAX_BOT_TOKEN пустой!")
         return
     headers = {
         "Authorization": f"{MAX_BOT_TOKEN}",
@@ -103,7 +100,8 @@ def send_message_to_max(chat_id: str, text: str):
         "text": text
     }
     try:
-        requests.post(f"{MAX_API_BASE}/messages", headers=headers, params=params, json=payload, verify=False, timeout=5)
+        res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params=params, json=payload, verify=False, timeout=5)
+        print(f"Ответ МАКС при отправке сообщения: {res.status_code} {res.text}")
     except Exception as e:
         print(f"Ошибка отправки сообщения в МАКС: {e}")
 
@@ -117,23 +115,51 @@ async def max_webhook(request: Request):
         return {"status": "Webhook is active!"}
     
     try:
-        data = await request.json()
-        message_obj = data.get("object", data.get("message", data))
-        message_text = message_obj.get("text", message_obj.get("body", {}).get("text", ""))
-        chat_id = message_obj.get("chat_id", message_obj.get("from", {}).get("id", ""))
+        # Получаем сырой JSON от МАКС
+        body_bytes = await request.body()
+        data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
         
-        if not message_text:
+        print("=== СЫРЫЕ ДАННЫЕ ОТ МАКС ===")
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        print("============================")
+        
+        # Максимально надежный поиск текста и chat_id
+        message_text = (
+            data.get("text") or 
+            data.get("message", {}).get("text") or 
+            data.get("body", {}).get("text") or 
+            data.get("message", {}).get("body", {}).get("text") or
+            data.get("object", {}).get("text") or
+            data.get("object", {}).get("message", {}).get("text") or
+            ""
+        )
+        
+        chat_id = (
+            data.get("chat_id") or 
+            data.get("message", {}).get("chat_id") or 
+            data.get("from", {}).get("id") or 
+            data.get("message", {}).get("sender", {}).get("id") or 
+            data.get("object", {}).get("chat_id") or
+            data.get("object", {}).get("sender", {}).get("id") or
+            ""
+        )
+        
+        if not message_text or not chat_id:
+            print("Предупреждение: не удалось найти text или chat_id в объекте.")
             return {"status": "ok"}
+
+        print(f"Получено сообщение от chat_id {chat_id}: {message_text}")
 
         if message_text.lower() == "/start":
             reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении!"
             send_message_to_max(str(chat_id), reply)
             return {"status": "ok"}
 
+        # Генерируем ответ через Groq и отправляем назад
         bot_reply = get_groq_answer(message_text)
         send_message_to_max(str(chat_id), bot_reply)
         
     except Exception as e:
-        print(f"Ошибка внутри webhook: {e}")
+        print(f"КРИТИЧЕСКАЯ ОШИБКА В WEBHOOK: {e}")
         
     return {"status": "ok"}
