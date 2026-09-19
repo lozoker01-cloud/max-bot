@@ -13,7 +13,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 MAX_API_BASE = "https://platform-api2.max.ru"
 
-# СЮДА НУЖНО БУДЕТ ВПИСАТЬ ВАШ ВНУТРЕННИЙ ID, когда вы его узнаете
+# ВСТАВЬТЕ СЮДА ВАШ ВНУТРЕННИЙ ID (который выдает команда /myid)
 OPERATOR_ID = "20195632" 
 
 app = FastAPI()
@@ -81,7 +81,7 @@ def register_webhook():
 def startup_event():
     register_webhook()
 
-def find_top_matches(user_message: str, top_n: int = 4) -> str:
+def find_top_matches(user_message: str, top_n: int = 5) -> str:
     global faq_items
     if not faq_items:
         return "База FAQ пуста."
@@ -105,12 +105,13 @@ def find_top_matches(user_message: str, top_n: int = 4) -> str:
         
         score = 0
         for w in user_words:
-            stem = w[:-2] if len(w) > 4 else w
+            # Умное обрезание окончаний (более безопасное)
+            stem = w[:-2] if len(w) >= 6 else (w[:-1] if len(w) == 5 else w)
             if stem in full_text:
                 score += 1
         
         if clean_msg in full_text:
-            score += 5
+            score += 10
             
         scored_items.append((score, item))
 
@@ -127,15 +128,16 @@ def find_top_matches(user_message: str, top_n: int = 4) -> str:
     return "\n\n".join(top_matches)
 
 def get_groq_answer(user_message: str) -> str:
-    retrieved_faq = find_top_matches(user_message, top_n=4)
+    retrieved_faq = find_top_matches(user_message, top_n=5)
     
     system_prompt = (
         "Ты — официальный бот приемной комиссии РГСУ.\n"
         "Отвечай ТОЛЬКО на основе FAQ ниже.\n\n"
         "ПРАВИЛА:\n"
-        "1. ОБЯЗАТЕЛЬНО ставь точку в конце.\n"
-        "2. ОБЯЗАТЕЛЬНО дели текст на абзацы (пустая строка между ними).\n"
-        "3. Если информации нет в FAQ, отвечай: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
+        "1. Будь умным: если спрашивают про 'документы', а в FAQ есть про 'подачу заявления' — это одно и то же. Отвечай смело.\n"
+        "2. ОБЯЗАТЕЛЬНО ставь точку в конце.\n"
+        "3. ОБЯЗАТЕЛЬНО дели текст на абзацы (пустая строка между ними).\n"
+        "4. Если информации СОВСЕМ нет в FAQ, отвечай: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
         f"=== ЧАСТЫЕ ВОПРОСЫ ===\n{retrieved_faq}"
     )
       
@@ -146,7 +148,7 @@ def get_groq_answer(user_message: str) -> str:
                 {"role": "user", "content": user_message}
             ],
             model="openai/gpt-oss-120b",
-            temperature=0.1, 
+            temperature=0.01, # Снизили до минимума для максимальной стабильности
             max_tokens=400
         )
         return response.choices[0].message.content
@@ -177,20 +179,40 @@ def send_message_to_max(target_id: str, text: str):
             pass
 
 def transfer_to_operator(user_id: str):
-    # Пишем пользователю
+    # 1. Пишем пользователю
     send_message_to_max(user_id, "⏳ Переключаю вас на специалиста приемной комиссии. Пожалуйста, подождите, скоро вам ответят.")
     
-    # Уведомляем админа (Степана), если ID установлен
+    # 2. Уведомляем администратора с ИНСТРУКЦИЕЙ
     if OPERATOR_ID:
-        alert_text = f"🚨 ВНИМАНИЕ!\nПользователь запросил помощь оператора.\nЕго системный ID: {user_id}\n\nНапишите ему."
+        alert_text = (
+            f"🚨 ВНИМАНИЕ!\nПользователь запросил помощь оператора.\n"
+            f"Его ID: {user_id}\n\n"
+            f"👇 Чтобы ответить ему, скопируйте команду ниже, через пробел напишите свой текст и отправьте боту:\n\n"
+            f"/ответ {user_id} "
+        )
         send_message_to_max(OPERATOR_ID, alert_text)
 
 def process_user_message(chat_id: str, text: str):
-    # СЕКРЕТНАЯ КОМАНДА ДЛЯ ПОЛУЧЕНИЯ ID
+    # 1. ФУНКЦИЯ ОТВЕТА ОТ ОПЕРАТОРА
+    if str(chat_id) == str(OPERATOR_ID) and text.lower().startswith("/ответ"):
+        parts = text.split(" ", 2)
+        if len(parts) >= 3:
+            target_user = parts[1]
+            reply_text = parts[2]
+            # Отправляем сообщение абитуриенту от лица оператора
+            send_message_to_max(target_user, f"👨‍💻 *Сообщение от специалиста приемной комиссии:*\n\n{reply_text}")
+            # Подтверждаем вам, что ушло
+            send_message_to_max(chat_id, f"✅ Сообщение успешно отправлено пользователю {target_user}!")
+        else:
+            send_message_to_max(chat_id, "❌ Ошибка формата. Напишите так:\n/ответ [ID_пользователя] [ваш текст]")
+        return
+
+    # 2. КОМАНДА ДЛЯ ПОЛУЧЕНИЯ ID
     if text.strip().lower() == "/myid":
         send_message_to_max(chat_id, f"✅ Ваш внутренний ID:\n{chat_id}")
         return
 
+    # ОБЫЧНЫЕ ВОПРОСЫ
     if text.lower() in ["/start", "старт", "привет"]:
         reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, и я постараюсь помочь!"
         send_message_to_max(chat_id, reply)
@@ -211,7 +233,7 @@ def process_user_message(chat_id: str, text: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running. Operator routing fixed!"}
+    return {"status": "Bot is running. Reply feature active!"}
 
 @app.api_route("/webhook", methods=["GET", "POST"])
 async def max_webhook(request: Request, background_tasks: BackgroundTasks):
