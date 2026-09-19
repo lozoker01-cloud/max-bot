@@ -16,10 +16,13 @@ MAX_API_BASE = "https://platform-api2.max.ru"
 # ВСТАВЬТЕ СЮДА ВАШ ВНУТРЕННИЙ ID
 OPERATOR_ID = "20195632" 
 
+# ВСТАВЬТЕ СЮДА ССЫЛКУ ИЗ GOOGLE APPS SCRIPT
+GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbxxdm0JGdLH7f60U4ZGetCXcCj4OsW7uGj0cPlOJmQZmX0ZPWb2e_vuLtt3DuhjH1_VXA/exec"
+
 app = FastAPI()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# Оперативная память для хранения истории диалогов
+# Оперативная память: теперь хранит счетчик сообщений
 user_history = {}
 
 print("Загрузка базы знаний (FAQ)...")
@@ -85,7 +88,6 @@ def startup_event():
     register_webhook()
 
 def clean_text(text: str) -> str:
-    # Удаляем технические метки cite
     pattern = r"\[" + "c" + "ite:" + r"\s*\d+\]"
     return re.sub(pattern, "", text).strip()
 
@@ -94,14 +96,11 @@ def find_top_matches(user_message: str, top_n: int = 5) -> str:
     if not faq_items:
         return "База FAQ пуста."
 
-    # ЖЕСТКАЯ ОЧИСТКА ОТ ЗНАКОВ ПРЕПИНАНИЯ (решает проблему с вопросительным знаком)
-    # Заменяем все символы, кроме букв, цифр и пробелов, на пробелы, затем убираем лишние пробелы
     clean_msg = re.sub(r'[^\w\s]', ' ', user_message.lower())
     clean_msg = re.sub(r'\s+', ' ', clean_msg).strip()
     
     user_words = set(clean_msg.split())
     
-    # Расширенный список стоп-слов
     stop_words = {"что", "такое", "как", "где", "когда", "есть", "ли", "это", "кто", "могу", "мне", "меня", "какие", "у", "в", "на", "с", "по", "для", "можно"}
     user_words = {w for w in user_words if len(w) > 2 and w not in stop_words}
     
@@ -119,12 +118,10 @@ def find_top_matches(user_message: str, top_n: int = 5) -> str:
         
         score = 0
         for w in user_words:
-            # Стемминг (обрезаем окончания для лучшего поиска)
             stem = w[:-2] if len(w) >= 6 else (w[:-1] if len(w) == 5 else w)
             if stem in full_text:
                 score += 1
         
-        # Если фраза целиком встречается в тексте (без знаков препинания)
         if clean_msg in re.sub(r'[^\w\s]', ' ', full_text):
             score += 10
             
@@ -144,15 +141,21 @@ def find_top_matches(user_message: str, top_n: int = 5) -> str:
 
     return "\n\n".join(top_matches)
 
-def get_groq_answer(user_message: str) -> str:
+def get_groq_answer(user_message: str, is_first_message: bool) -> str:
     retrieved_faq = find_top_matches(user_message, top_n=5)
     
+    # ДИНАМИЧЕСКОЕ ПРАВИЛО ПРИВЕТСТВИЯ
+    if is_first_message:
+        greeting_rule = "1. БУДЬ ЧЕЛОВЕКОМ: Начни ответ вежливо (например, «Здравствуйте!», «Добрый день!»)."
+    else:
+        greeting_rule = "1. БУДЬ ЧЕЛОВЕКОМ: Отвечай сразу по делу. НЕ ЗДОРОВАЙСЯ (никаких «Здравствуйте» или «Добрый день»), так как диалог уже идет."
+
     system_prompt = (
         "Ты — дружелюбный, официальный и компетентный консультант приемной комиссии РГСУ.\n"
         "Твоя задача — отвечать на вопросы абитуриентов, используя ТОЛЬКО предоставленную Базу Знаний.\n\n"
         "ПРАВИЛА ОТВЕТА (ОЧЕНЬ ВАЖНО):\n"
-        "1. БУДЬ ЧЕЛОВЕКОМ: Начинай ответ вежливо (например, «Здравствуйте!», «Конечно, сейчас подскажу.», «Смотрите...»). Формулируй ответ полными, красивыми предложениями. Не бросай сухие списки без контекста.\n"
-        "2. ОПИРАЙСЯ ТОЛЬКО НА БАЗУ: Вся информация в твоем ответе должна быть взята ИЗ СТРОК НИЖЕ. Ты можешь перефразировать текст для красоты, но факты менять нельзя.\n"
+        f"{greeting_rule} Формулируй ответ полными, красивыми предложениями. Не бросай сухие списки без контекста.\n"
+        "2. ОПИРАЙСЯ ТОЛЬКО НА БАЗУ: Вся информация в твоем ответе должна быть взята ИЗ СТРОК НИЖЕ. Ты можешь перефразировать текст для естественности, но факты менять нельзя.\n"
         "3. ФОРМАТИРОВАНИЕ: Дели текст на абзацы (используй пустые строки). Если нужно — используй списки через дефис.\n"
         "4. ОТСУТСТВИЕ ИНФОРМАЦИИ: Если в Базе Знаний нет ответа на вопрос пользователя, отвечай ТОЧНО этой фразой: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
         f"=== БАЗА ЗНАНИЙ (ПРАВИЛА ПРИЕМА) ===\n{retrieved_faq}"
@@ -165,7 +168,7 @@ def get_groq_answer(user_message: str) -> str:
                 {"role": "user", "content": user_message}
             ],
             model="openai/gpt-oss-120b",
-            temperature=0.2, # Вернули 0.2 для более человечной речи, но без сильных фантазий
+            temperature=0.2, 
             max_tokens=600
         )
         return response.choices[0].message.content
@@ -194,6 +197,22 @@ def send_message_to_max(target_id: str, text: str):
                 break
         except Exception as e:
             pass
+
+# ФУНКЦИЯ ДЛЯ ОТПРАВКИ ДАННЫХ В GOOGLE ТАБЛИЦУ
+def log_to_google_sheet(user_name, user_id, question, answer):
+    if not GOOGLE_SHEET_WEBHOOK:
+        return
+    
+    payload = {
+        "name": user_name,
+        "id": user_id,
+        "question": question,
+        "answer": answer
+    }
+    try:
+        requests.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=5)
+    except Exception as e:
+        print(f"Ошибка записи в таблицу: {e}")
 
 def transfer_to_operator(user_id: str, user_name: str):
     send_message_to_max(user_id, "⏳ Переключаю вас на специалиста приемной комиссии. Пожалуйста, подождите, скоро вам ответят.")
@@ -239,12 +258,17 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         transfer_to_operator(chat_id, user_name)
         return
         
-    bot_reply = get_groq_answer(text)
+    # Считаем сообщения, чтобы знать, здороваться или нет
+    if chat_id not in user_history:
+        user_history[chat_id] = {"count": 0, "question": "", "answer": ""}
     
-    user_history[chat_id] = {
-        "question": text,
-        "answer": bot_reply
-    }
+    user_history[chat_id]["count"] += 1
+    is_first_msg = (user_history[chat_id]["count"] == 1)
+
+    bot_reply = get_groq_answer(text, is_first_msg)
+    
+    user_history[chat_id]["question"] = text
+    user_history[chat_id]["answer"] = bot_reply
     
     if "к сожалению" not in bot_reply.lower():
         final_reply = bot_reply + "\n\n---\n*Если я не смог полностью ответить на ваш вопрос, напишите слово «Оператор».*"
@@ -252,10 +276,13 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         final_reply = bot_reply + "\n\n*Для связи со специалистом напишите слово «Оператор».*"
         
     send_message_to_max(chat_id, final_reply)
+    
+    # Отправляем логи в Google Таблицу (работает в фоне)
+    log_to_google_sheet(user_name, chat_id, text, bot_reply)
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running. Human-like responses & punctuation fix active!"}
+    return {"status": "Bot is running with Smart Greetings & Google Sheets logging!"}
 
 @app.api_route("/webhook", methods=["GET", "POST"])
 async def max_webhook(request: Request, background_tasks: BackgroundTasks):
@@ -298,6 +325,7 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
                         break
 
         if message_text and chat_id:
+            # Запускаем обработку сообщения в фоне, чтобы сервер МАКС не ждал
             background_tasks.add_task(process_user_message, str(chat_id), message_text, str(user_name))
           
     except Exception as e:
