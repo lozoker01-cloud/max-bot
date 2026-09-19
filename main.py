@@ -185,7 +185,6 @@ def get_provod_ai_answer(user_message: str, is_first_message: bool) -> str:
     if not OPENAI_API_KEY:
         return "🚨 ОШИБКА: Не задан API ключ в переменных окружения Render."
 
-    # Направляем запросы прямо на ваш прокси provod.ai
     url = "https://api.provod.ai/v1/chat/completions"
     
     headers = {
@@ -204,12 +203,27 @@ def get_provod_ai_answer(user_message: str, is_first_message: bool) -> str:
     
     try:
         res = requests.post(url, headers=headers, json=payload, timeout=20)
-        data = res.json()
+        try:
+            data = res.json()
+        except:
+            data = res.text
+
         if res.status_code == 200:
-            return data["choices"][0]["message"]["content"]
+            if isinstance(data, dict):
+                return data["choices"][0]["message"]["content"]
+            else:
+                return f"🚨 ОШИБКА ОТВЕТА: {str(data)}"
         else:
-            error_msg = data.get("error", {}).get("message", str(data))
-            return f"🚨 ОШИБКА PROVOD.AI: {error_msg}"
+            # Безопасное извлечение ошибки без падения на строках
+            if isinstance(data, dict):
+                err = data.get("error", {})
+                if isinstance(err, dict):
+                    error_msg = err.get("message", str(data))
+                else:
+                    error_msg = str(err)
+            else:
+                error_msg = str(data)
+            return f"🚨 ОШИБКА PROVOD.AI ({res.status_code}): {error_msg}"
     except Exception as e:
         return f"🚨 ОШИБКА ЗАПРОСА: {str(e)}"
 
