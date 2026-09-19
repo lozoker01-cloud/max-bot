@@ -13,11 +13,14 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 MAX_API_BASE = "https://platform-api2.max.ru"
 
-# ВСТАВЬТЕ СЮДА ВАШ ВНУТРЕННИЙ ID (который выдает команда /myid)
+# ВСТАВЬТЕ СЮДА ВАШ ВНУТРЕННИЙ ID
 OPERATOR_ID = "20195632" 
 
 app = FastAPI()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
+# Оперативная память для хранения истории диалогов (чтобы передавать оператору)
+user_history = {}
 
 print("Загрузка базы знаний (FAQ)...")
 try:
@@ -81,7 +84,11 @@ def register_webhook():
 def startup_event():
     register_webhook()
 
-def find_top_matches(user_message: str, top_n: int = 5) -> str:
+def clean_text(text: str) -> str:
+    # Удаляем артефакты вроде[cite: 17]
+    return re.sub(r'\', '', text).strip()
+
+def find_top_matches(user_message: str, top_n: int = 4) -> str:
     global faq_items
     if not faq_items:
         return "База FAQ пуста."
@@ -93,19 +100,20 @@ def find_top_matches(user_message: str, top_n: int = 5) -> str:
     user_words = {w for w in user_words if len(w) > 2 and w not in stop_words}
     
     if not user_words:
-        return "\n\n".join([f"Вопрос: {i.get('question', '')}\nОтвет: {i.get('answer', '')}" for i in faq_items[:top_n]])
+        return "Недостаточно слов для поиска."
 
     scored_items = []
     for item in faq_items:
         if not isinstance(item, dict):
             continue
-        q_text = item.get('question', '').lower()
-        a_text = item.get('answer', '').lower()
+        
+        # Очищаем текст базы от прямо во время поиска
+        q_text = clean_text(item.get('question', '')).lower()
+        a_text = clean_text(item.get('answer', '')).lower()
         full_text = q_text + " " + a_text
         
         score = 0
         for w in user_words:
-            # Умное обрезание окончаний (более безопасное)
             stem = w[:-2] if len(w) >= 6 else (w[:-1] if len(w) == 5 else w)
             if stem in full_text:
                 score += 1
@@ -120,7 +128,9 @@ def find_top_matches(user_message: str, top_n: int = 5) -> str:
     top_matches = []
     for score, item in scored_items[:top_n]:
         if score > 0:
-            top_matches.append(f"Вопрос: {item.get('question', '')}\nОтвет: {item.get('answer', '')}")
+            q = clean_text(item.get('question', ''))
+            a = clean_text(item.get('answer', ''))
+            top_matches.append(f"Вопрос: {q}\nОтвет: {a}")
 
     if not top_matches:
         return "Нет информации в базе."
@@ -128,17 +138,16 @@ def find_top_matches(user_message: str, top_n: int = 5) -> str:
     return "\n\n".join(top_matches)
 
 def get_groq_answer(user_message: str) -> str:
-    retrieved_faq = find_top_matches(user_message, top_n=5)
+    retrieved_faq = find_top_matches(user_message, top_n=4)
     
     system_prompt = (
-        "Ты — официальный бот приемной комиссии РГСУ.\n"
-        "Отвечай ТОЛЬКО на основе FAQ ниже.\n\n"
-        "ПРАВИЛА:\n"
-        "1. Будь умным: если спрашивают про 'документы', а в FAQ есть про 'подачу заявления' — это одно и то же. Отвечай смело.\n"
-        "2. ОБЯЗАТЕЛЬНО ставь точку в конце.\n"
-        "3. ОБЯЗАТЕЛЬНО дели текст на абзацы (пустая строка между ними).\n"
-        "4. Если информации СОВСЕМ нет в FAQ, отвечай: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
-        f"=== ЧАСТЫЕ ВОПРОСЫ ===\n{retrieved_faq}"
+        "Ты — официальный информационный бот приемной комиссии РГСУ.\n"
+        "Твоя задача — строго передавать информацию из базы знаний (FAQ) пользователю.\n\n"
+        "ПРАВИЛА (ОЧЕНЬ ВАЖНО):\n"
+        "1. Отвечай СЛОВО В СЛОВО по тексту из базы знаний. Не придумывай от себя, не меняй смысл и не сокращай важные перечисления.\n"
+        "2. Удали любые технические скобки вроде из ответа.\n"
+        "3. Если подходящего ответа нет в тексте ниже, отвечай СТРОГО одной фразой: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
+        f"=== БАЗА ЗНАНИЙ ===\n{retrieved_faq}"
     )
       
     try:
@@ -148,8 +157,8 @@ def get_groq_answer(user_message: str) -> str:
                 {"role": "user", "content": user_message}
             ],
             model="openai/gpt-oss-120b",
-            temperature=0.01, # Снизили до минимума для максимальной стабильности
-            max_tokens=400
+            temperature=0.0, # Температура 0.0 — бот вообще перестанет фантазировать
+            max_tokens=500
         )
         return response.choices[0].message.content
     except:
@@ -178,62 +187,73 @@ def send_message_to_max(target_id: str, text: str):
         except Exception as e:
             pass
 
-def transfer_to_operator(user_id: str):
-    # 1. Пишем пользователю
+def transfer_to_operator(user_id: str, user_name: str):
+    # Пишем пользователю
     send_message_to_max(user_id, "⏳ Переключаю вас на специалиста приемной комиссии. Пожалуйста, подождите, скоро вам ответят.")
     
-    # 2. Уведомляем администратора с ИНСТРУКЦИЕЙ
+    # Достаем историю
+    history = user_history.get(user_id, {})
+    last_q = history.get("question", "Неизвестно (сразу запросил оператора)")
+    last_a = history.get("answer", "Нет ответа")
+    
     if OPERATOR_ID:
         alert_text = (
-            f"🚨 ВНИМАНИЕ!\nПользователь запросил помощь оператора.\n"
-            f"Его ID: {user_id}\n\n"
-            f"👇 Чтобы ответить ему, скопируйте команду ниже, через пробел напишите свой текст и отправьте боту:\n\n"
+            f"🚨 ЗАПРОС ОПЕРАТОРА\n\n"
+            f"👤 Имя: {user_name}\n"
+            f"🆔 ID: {user_id}\n\n"
+            f"❓ Вопрос пользователя:\n{last_q}\n\n"
+            f"🤖 Что ответил бот:\n{last_a}\n\n"
+            f"👇 Для ответа скопируйте команду ниже, впишите текст и отправьте сюда:\n\n"
             f"/ответ {user_id} "
         )
         send_message_to_max(OPERATOR_ID, alert_text)
 
-def process_user_message(chat_id: str, text: str):
-    # 1. ФУНКЦИЯ ОТВЕТА ОТ ОПЕРАТОРА
+def process_user_message(chat_id: str, text: str, user_name: str):
+    # ФУНКЦИЯ ОТВЕТА ОТ ОПЕРАТОРА
     if str(chat_id) == str(OPERATOR_ID) and text.lower().startswith("/ответ"):
         parts = text.split(" ", 2)
         if len(parts) >= 3:
             target_user = parts[1]
             reply_text = parts[2]
-            # Отправляем сообщение абитуриенту от лица оператора
             send_message_to_max(target_user, f"👨‍💻 *Сообщение от специалиста приемной комиссии:*\n\n{reply_text}")
-            # Подтверждаем вам, что ушло
-            send_message_to_max(chat_id, f"✅ Сообщение успешно отправлено пользователю {target_user}!")
+            send_message_to_max(chat_id, f"✅ Ответ отправлен пользователю {target_user}!")
         else:
             send_message_to_max(chat_id, "❌ Ошибка формата. Напишите так:\n/ответ [ID_пользователя] [ваш текст]")
         return
 
-    # 2. КОМАНДА ДЛЯ ПОЛУЧЕНИЯ ID
     if text.strip().lower() == "/myid":
         send_message_to_max(chat_id, f"✅ Ваш внутренний ID:\n{chat_id}")
         return
 
-    # ОБЫЧНЫЕ ВОПРОСЫ
     if text.lower() in ["/start", "старт", "привет"]:
         reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, и я постараюсь помочь!"
         send_message_to_max(chat_id, reply)
         return
         
     if "оператор" in text.lower():
-        transfer_to_operator(chat_id)
+        transfer_to_operator(chat_id, user_name)
         return
         
+    # Бот генерирует ответ
     bot_reply = get_groq_answer(text)
     
+    # Сохраняем в память для передачи оператору
+    user_history[chat_id] = {
+        "question": text,
+        "answer": bot_reply
+    }
+    
+    # Добавляем приписку
     if "к сожалению" not in bot_reply.lower():
-        bot_reply += "\n\n---\n*Если я не смог полностью ответить на ваш вопрос, напишите слово «Оператор».*"
+        final_reply = bot_reply + "\n\n---\n*Если я не смог полностью ответить на ваш вопрос, напишите слово «Оператор».*"
     else:
-        bot_reply += "\n\n*Для связи со специалистом напишите слово «Оператор».*"
+        final_reply = bot_reply + "\n\n*Для связи со специалистом напишите слово «Оператор».*"
         
-    send_message_to_max(chat_id, bot_reply)
+    send_message_to_max(chat_id, final_reply)
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running. Reply feature active!"}
+    return {"status": "Bot is running with history & operator context!"}
 
 @app.api_route("/webhook", methods=["GET", "POST"])
 async def max_webhook(request: Request, background_tasks: BackgroundTasks):
@@ -251,11 +271,15 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
             data.get("text") or 
             ""
         )
+        
+        # Пытаемся достать имя пользователя
+        sender_info = msg_block.get("sender", {})
+        user_name = sender_info.get("name") or sender_info.get("username") or "Абитуриент"
           
         chat_id = (
             msg_block.get("chat_id") or 
-            msg_block.get("sender", {}).get("user_id") or 
-            msg_block.get("sender", {}).get("id") or 
+            sender_info.get("user_id") or 
+            sender_info.get("id") or 
             msg_block.get("recipient", {}).get("chat_id") or
             data.get("chat_id") or 
             data.get("user_id") or 
@@ -273,7 +297,7 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
                         break
 
         if message_text and chat_id:
-            background_tasks.add_task(process_user_message, str(chat_id), message_text)
+            background_tasks.add_task(process_user_message, str(chat_id), message_text, str(user_name))
           
     except Exception as e:
         traceback.print_exc()
