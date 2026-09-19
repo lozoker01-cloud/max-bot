@@ -197,8 +197,8 @@ def get_groq_answer(user_message: str, is_first_message: bool) -> str:
             max_tokens=600
         )
         return response.choices[0].message.content
-    except:
-        return "Произошла ошибка при обращении к серверу. Попробуйте позже."
+except Exception as e:
+        return f"🚨 ОШИБКА: {str(e)}"
 
 def send_message_to_max(target_id: str, text: str):
     if not MAX_BOT_TOKEN or not target_id:
