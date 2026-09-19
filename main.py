@@ -197,7 +197,7 @@ def get_groq_answer(user_message: str, is_first_message: bool) -> str:
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "llama3-8b-8192",
+        "model": "openai/gpt-oss-20b",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
@@ -292,7 +292,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with Groq (Llama3-8b) & Clean Keys!"}
+    return {"status": "Bot is running with Groq (gpt-oss-20b) & Clean Keys!"}
 
 @app.get("/reload_faq")
 def api_reload_faq():
