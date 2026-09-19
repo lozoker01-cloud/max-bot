@@ -8,8 +8,9 @@ from fastapi import FastAPI, Request, BackgroundTasks
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
+# Автоматически убираем лишние пробелы и переносы строк, если они случайно скопировались
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN", "").strip()
 MAX_API_BASE = "https://platform-api2.max.ru"
 
 # ВСТАВЬТЕ СЮДА ВАШ ВНУТРЕННИЙ ID
@@ -287,7 +288,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with Groq (Llama-3.1-8b) & Tri-Layer Memory!"}
+    return {"status": "Bot is running with Groq (Sanitized Key) & Tri-Layer Memory!"}
 
 @app.get("/reload_faq")
 def api_reload_faq():
