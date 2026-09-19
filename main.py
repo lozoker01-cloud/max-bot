@@ -8,9 +8,13 @@ from fastapi import FastAPI, Request, BackgroundTasks
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Автоматически убираем лишние пробелы и переносы строк, если они случайно скопировались
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN", "").strip()
+# Жесткая очистка ключа от любых переносов строк и пробелов
+raw_groq_key = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEY = raw_groq_key.replace("\n", "").replace("\r", "").strip()
+
+raw_max_token = os.getenv("MAX_BOT_TOKEN", "")
+MAX_BOT_TOKEN = raw_max_token.replace("\n", "").replace("\r", "").strip()
+
 MAX_API_BASE = "https://platform-api2.max.ru"
 
 # ВСТАВЬТЕ СЮДА ВАШ ВНУТРЕННИЙ ID
@@ -193,7 +197,7 @@ def get_groq_answer(user_message: str, is_first_message: bool) -> str:
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "llama-3.1-8b-instant",
+        "model": "llama3-8b-8192",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
@@ -288,7 +292,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with Groq (Sanitized Key) & Tri-Layer Memory!"}
+    return {"status": "Bot is running with Groq (Llama3-8b) & Clean Keys!"}
 
 @app.get("/reload_faq")
 def api_reload_faq():
