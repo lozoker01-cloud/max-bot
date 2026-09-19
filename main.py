@@ -17,22 +17,13 @@ MAX_API_BASE = "https://platform-api2.max.ru"
 OPERATOR_ID = "20195632" 
 
 # ВСТАВЬТЕ СЮДА ССЫЛКУ ИЗ GOOGLE APPS SCRIPT
-GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbxxdm0JGdLH7f60U4ZGetCXcCj4OsW7uGj0cPlOJmQZmX0ZPWb2e_vuLtt3DuhjH1_VXA/exec"
+GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbxTEFZ3OI1cTCEaoDhxtAkpAkGPswJK5_Nh-Cd9kdpCVEZPhpK0iyJzS-FnG9uzKnBTXg/exec"
 
 app = FastAPI()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# Оперативная память: теперь хранит счетчик сообщений
 user_history = {}
-
-print("Загрузка базы знаний (FAQ)...")
-try:
-    with open('faq_data.json', 'r', encoding='utf-8') as f:
-        faq_raw = json.load(f)
-    print("FAQ успешно загружен!")
-except Exception as e:
-    print(f"Ошибка загрузки faq_data.json: {e}")
-    faq_raw = {}
+faq_items = []
 
 def flatten_faq(data):
     flat_list = []
@@ -60,7 +51,42 @@ def flatten_faq(data):
                     flat_list.append(item)
     return flat_list
 
-faq_items = flatten_faq(faq_raw)
+def load_knowledge_base():
+    """Собирает знания из 3 источников: JSON, TXT и Google Таблицы"""
+    global faq_items
+    faq_items = []
+    
+    print("Загрузка 1/3: faq_data.json...")
+    try:
+        with open('faq_data.json', 'r', encoding='utf-8') as f:
+            faq_raw = json.load(f)
+            faq_items.extend(flatten_faq(faq_raw))
+    except Exception as e:
+        print(f"Ошибка JSON: {e}")
+
+    print("Загрузка 2/3: pravila.txt...")
+    try:
+        with open('pravila.txt', 'r', encoding='utf-8') as f:
+            content = f.read()
+            # Разбиваем текст на абзацы (правила)
+            paragraphs = [p.strip() for p in content.split('\n\n') if len(p.strip()) > 20]
+            for p in paragraphs:
+                faq_items.append({"question": "Официальные правила приема РГСУ", "answer": p})
+    except Exception as e:
+        print(f"Ошибка TXT: {e}")
+
+    print("Загрузка 3/3: Google Таблицы (Динамическая база)...")
+    if GOOGLE_SHEET_WEBHOOK:
+        try:
+            res = requests.get(GOOGLE_SHEET_WEBHOOK, timeout=10)
+            if res.status_code == 200:
+                dynamic_data = res.json()
+                for item in dynamic_data:
+                    faq_items.append({"question": item.get("question", ""), "answer": item.get("answer", "")})
+        except Exception as e:
+            print(f"Ошибка связи с Таблицей: {e}")
+            
+    print(f"База знаний успешно собрана! Всего правил: {len(faq_items)}")
 
 def register_webhook():
     if not MAX_BOT_TOKEN:
@@ -85,6 +111,7 @@ def register_webhook():
 
 @app.on_event("startup")
 def startup_event():
+    load_knowledge_base()
     register_webhook()
 
 def clean_text(text: str) -> str:
@@ -94,13 +121,12 @@ def clean_text(text: str) -> str:
 def find_top_matches(user_message: str, top_n: int = 5) -> str:
     global faq_items
     if not faq_items:
-        return "База FAQ пуста."
+        return "База пуста."
 
     clean_msg = re.sub(r'[^\w\s]', ' ', user_message.lower())
     clean_msg = re.sub(r'\s+', ' ', clean_msg).strip()
     
     user_words = set(clean_msg.split())
-    
     stop_words = {"что", "такое", "как", "где", "когда", "есть", "ли", "это", "кто", "могу", "мне", "меня", "какие", "у", "в", "на", "с", "по", "для", "можно"}
     user_words = {w for w in user_words if len(w) > 2 and w not in stop_words}
     
@@ -134,7 +160,7 @@ def find_top_matches(user_message: str, top_n: int = 5) -> str:
         if score > 0:
             q = clean_text(item.get('question', ''))
             a = clean_text(item.get('answer', ''))
-            top_matches.append(f"Правило: {q}\nТекст: {a}")
+            top_matches.append(f"Контекст: {q}\nТекст: {a}")
 
     if not top_matches:
         return "Нет информации в базе."
@@ -144,20 +170,19 @@ def find_top_matches(user_message: str, top_n: int = 5) -> str:
 def get_groq_answer(user_message: str, is_first_message: bool) -> str:
     retrieved_faq = find_top_matches(user_message, top_n=5)
     
-    # ДИНАМИЧЕСКОЕ ПРАВИЛО ПРИВЕТСТВИЯ
     if is_first_message:
         greeting_rule = "1. БУДЬ ЧЕЛОВЕКОМ: Начни ответ вежливо (например, «Здравствуйте!», «Добрый день!»)."
     else:
-        greeting_rule = "1. БУДЬ ЧЕЛОВЕКОМ: Отвечай сразу по делу. НЕ ЗДОРОВАЙСЯ (никаких «Здравствуйте» или «Добрый день»), так как диалог уже идет."
+        greeting_rule = "1. БУДЬ ЧЕЛОВЕКОМ: Отвечай сразу по делу. НЕ ЗДОРОВАЙСЯ, так как диалог уже идет."
 
     system_prompt = (
         "Ты — дружелюбный, официальный и компетентный консультант приемной комиссии РГСУ.\n"
         "Твоя задача — отвечать на вопросы абитуриентов, используя ТОЛЬКО предоставленную Базу Знаний.\n\n"
         "ПРАВИЛА ОТВЕТА (ОЧЕНЬ ВАЖНО):\n"
         f"{greeting_rule} Формулируй ответ полными, красивыми предложениями. Не бросай сухие списки без контекста.\n"
-        "2. ОПИРАЙСЯ ТОЛЬКО НА БАЗУ: Вся информация в твоем ответе должна быть взята ИЗ СТРОК НИЖЕ. Ты можешь перефразировать текст для естественности, но факты менять нельзя.\n"
-        "3. ФОРМАТИРОВАНИЕ: Дели текст на абзацы (используй пустые строки). Если нужно — используй списки через дефис.\n"
-        "4. ОТСУТСТВИЕ ИНФОРМАЦИИ: Если в Базе Знаний нет ответа на вопрос пользователя, отвечай ТОЧНО этой фразой: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
+        "2. ОПИРАЙСЯ ТОЛЬКО НА БАЗУ: Вся информация в твоем ответе должна быть взята ИЗ СТРОК НИЖЕ. Ты можешь перефразировать текст, но факты менять нельзя.\n"
+        "3. ФОРМАТИРОВАНИЕ: Дели текст на абзацы. Если нужно — используй списки через дефис.\n"
+        "4. ОТСУТСТВИЕ ИНФОРМАЦИИ: Если в Базе Знаний нет ответа, отвечай ТОЧНО этой фразой: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
         f"=== БАЗА ЗНАНИЙ (ПРАВИЛА ПРИЕМА) ===\n{retrieved_faq}"
     )
       
@@ -178,71 +203,41 @@ def get_groq_answer(user_message: str, is_first_message: bool) -> str:
 def send_message_to_max(target_id: str, text: str):
     if not MAX_BOT_TOKEN or not target_id:
         return
-    
-    headers = {
-        "Authorization": f"{MAX_BOT_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    
+    headers = {"Authorization": f"{MAX_BOT_TOKEN}", "Content-Type": "application/json"}
     for id_param in ["user_id", "chat_id"]:
-        params = {id_param: target_id}
-        payload = {
-            id_param: target_id,
-            "text": text
-        }
-
         try:
-            res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params=params, json=payload, verify=False, timeout=5)
+            res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params={id_param: target_id}, json={id_param: target_id, "text": text}, verify=False, timeout=5)
             if res.status_code == 200:
                 break
-        except Exception as e:
+        except:
             pass
 
-# ФУНКЦИЯ ДЛЯ ОТПРАВКИ ДАННЫХ В GOOGLE ТАБЛИЦУ
 def log_to_google_sheet(user_name, user_id, question, answer):
     if not GOOGLE_SHEET_WEBHOOK:
         return
-    
-    payload = {
-        "name": user_name,
-        "id": user_id,
-        "question": question,
-        "answer": answer
-    }
+    payload = {"name": user_name, "id": user_id, "question": question, "answer": answer}
     try:
         requests.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=5)
-    except Exception as e:
-        print(f"Ошибка записи в таблицу: {e}")
+    except:
+        pass
 
 def transfer_to_operator(user_id: str, user_name: str):
     send_message_to_max(user_id, "⏳ Переключаю вас на специалиста приемной комиссии. Пожалуйста, подождите, скоро вам ответят.")
-    
     history = user_history.get(user_id, {})
-    last_q = history.get("question", "Неизвестно (сразу запросил оператора)")
+    last_q = history.get("question", "Неизвестно")
     last_a = history.get("answer", "Нет ответа")
-    
     if OPERATOR_ID:
-        alert_text = (
-            f"🚨 ЗАПРОС ОПЕРАТОРА\n\n"
-            f"👤 Имя: {user_name}\n"
-            f"🆔 ID: {user_id}\n\n"
-            f"❓ Вопрос пользователя:\n{last_q}\n\n"
-            f"🤖 Что ответил бот:\n{last_a}\n\n"
-            f"👇 Для ответа скопируйте команду ниже, впишите текст и отправьте сюда:\n\n"
-            f"/ответ {user_id} "
-        )
+        alert_text = (f"🚨 ЗАПРОС ОПЕРАТОРА\n\n👤 Имя: {user_name}\n🆔 ID: {user_id}\n\n❓ Вопрос:\n{last_q}\n\n🤖 Ответ бота:\n{last_a}\n\n👇 Для ответа скопируйте:\n\n/ответ {user_id} ")
         send_message_to_max(OPERATOR_ID, alert_text)
 
 def process_user_message(chat_id: str, text: str, user_name: str):
     if str(chat_id) == str(OPERATOR_ID) and text.lower().startswith("/ответ"):
         parts = text.split(" ", 2)
         if len(parts) >= 3:
-            target_user = parts[1]
-            reply_text = parts[2]
-            send_message_to_max(target_user, f"👨‍💻 *Сообщение от специалиста приемной комиссии:*\n\n{reply_text}")
-            send_message_to_max(chat_id, f"✅ Ответ отправлен пользователю {target_user}!")
+            send_message_to_max(parts[1], f"👨‍💻 *Сообщение от специалиста приемной комиссии:*\n\n{parts[2]}")
+            send_message_to_max(chat_id, f"✅ Ответ отправлен пользователю {parts[1]}!")
         else:
-            send_message_to_max(chat_id, "❌ Ошибка формата. Напишите так:\n/ответ [ID_пользователя] [ваш текст]")
+            send_message_to_max(chat_id, "❌ Ошибка формата. Напишите так:\n/ответ [ID] [текст]")
         return
 
     if text.strip().lower() == "/myid":
@@ -250,15 +245,13 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         return
 
     if text.lower() in ["/start", "старт", "привет"]:
-        reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, и я постараюсь помочь!"
-        send_message_to_max(chat_id, reply)
+        send_message_to_max(chat_id, "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, и я постараюсь помочь!")
         return
         
     if "оператор" in text.lower():
         transfer_to_operator(chat_id, user_name)
         return
         
-    # Считаем сообщения, чтобы знать, здороваться или нет
     if chat_id not in user_history:
         user_history[chat_id] = {"count": 0, "question": "", "answer": ""}
     
@@ -266,7 +259,6 @@ def process_user_message(chat_id: str, text: str, user_name: str):
     is_first_msg = (user_history[chat_id]["count"] == 1)
 
     bot_reply = get_groq_answer(text, is_first_msg)
-    
     user_history[chat_id]["question"] = text
     user_history[chat_id]["answer"] = bot_reply
     
@@ -276,13 +268,17 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         final_reply = bot_reply + "\n\n*Для связи со специалистом напишите слово «Оператор».*"
         
     send_message_to_max(chat_id, final_reply)
-    
-    # Отправляем логи в Google Таблицу (работает в фоне)
     log_to_google_sheet(user_name, chat_id, text, bot_reply)
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with Smart Greetings & Google Sheets logging!"}
+    return {"status": "Bot is running with Tri-Layer Memory (JSON + TXT + Sheets)!"}
+
+# СЕКРЕТНАЯ КНОПКА ДЛЯ ТАБЛИЦЫ: ПРИКАЗАТЬ БОТУ ПЕРЕЗАГРУЗИТЬ БАЗУ
+@app.get("/reload_faq")
+def api_reload_faq():
+    load_knowledge_base()
+    return {"status": "success", "rules_loaded": len(faq_items)}
 
 @app.api_route("/webhook", methods=["GET", "POST"])
 async def max_webhook(request: Request, background_tasks: BackgroundTasks):
@@ -292,43 +288,20 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         body_bytes = await request.body()
         data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
-        
         msg_block = data.get("message", {})
-        message_text = (
-            msg_block.get("body", {}).get("text") or 
-            msg_block.get("text") or 
-            data.get("text") or 
-            ""
-        )
-        
+        message_text = (msg_block.get("body", {}).get("text") or msg_block.get("text") or data.get("text") or "")
         sender_info = msg_block.get("sender", {})
         user_name = sender_info.get("name") or sender_info.get("username") or "Абитуриент"
-          
-        chat_id = (
-            msg_block.get("chat_id") or 
-            sender_info.get("user_id") or 
-            sender_info.get("id") or 
-            msg_block.get("recipient", {}).get("chat_id") or
-            data.get("chat_id") or 
-            data.get("user_id") or 
-            ""
-        )
+        chat_id = (msg_block.get("chat_id") or sender_info.get("user_id") or sender_info.get("id") or msg_block.get("recipient", {}).get("chat_id") or data.get("chat_id") or data.get("user_id") or "")
           
         if not chat_id and isinstance(msg_block, dict):
             for k, v in msg_block.items():
-                if isinstance(v, dict):
-                    if "id" in v:
-                        chat_id = v["id"]
-                        break
-                    if "user_id" in v:
-                        chat_id = v["user_id"]
-                        break
+                if isinstance(v, dict) and "id" in v:
+                    chat_id = v["id"]
+                    break
 
         if message_text and chat_id:
-            # Запускаем обработку сообщения в фоне, чтобы сервер МАКС не ждал
             background_tasks.add_task(process_user_message, str(chat_id), message_text, str(user_name))
-          
     except Exception as e:
         traceback.print_exc()
-          
     return {"status": "ok"}
