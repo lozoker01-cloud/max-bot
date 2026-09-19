@@ -85,8 +85,9 @@ def startup_event():
     register_webhook()
 
 def clean_text(text: str) -> str:
-    # Исправленное удаление артефактов[cite: 17]
-    return re.sub(r'\', '', text).strip()
+    # ИСПРАВЛЕНО: Безопасное регулярное выражение (разбито на строки, чтобы парсер его не съел)
+    pattern = r"\[" + "c" + "ite:" + r"\s*\d+\]"
+    return re.sub(pattern, "", text).strip()
 
 def find_top_matches(user_message: str, top_n: int = 4) -> str:
     global faq_items
@@ -144,7 +145,7 @@ def get_groq_answer(user_message: str) -> str:
         "Твоя задача — строго передавать информацию из базы знаний (FAQ) пользователю.\n\n"
         "ПРАВИЛА (ОЧЕНЬ ВАЖНО):\n"
         "1. Отвечай СЛОВО В СЛОВО по тексту из базы знаний. Не придумывай от себя, не меняй смысл и не сокращай важные перечисления.\n"
-        "2. Удали любые технические скобки из ответа.\n"
+        "2. Удали любые технические метки, содержащие слово cite.\n"
         "3. Если подходящего ответа нет в тексте ниже, отвечай СТРОГО одной фразой: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
         f"=== БАЗА ЗНАНИЙ ===\n{retrieved_faq}"
     )
@@ -246,7 +247,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with history & operator context!"}
+    return {"status": "Bot is running perfectly!"}
 
 @app.api_route("/webhook", methods=["GET", "POST"])
 async def max_webhook(request: Request, background_tasks: BackgroundTasks):
