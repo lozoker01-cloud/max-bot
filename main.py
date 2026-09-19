@@ -85,23 +85,28 @@ def startup_event():
     register_webhook()
 
 def clean_text(text: str) -> str:
-    # ИСПРАВЛЕНО: Безопасное регулярное выражение (разбито на строки, чтобы парсер его не съел)
+    # Удаляем технические метки cite
     pattern = r"\[" + "c" + "ite:" + r"\s*\d+\]"
     return re.sub(pattern, "", text).strip()
 
-def find_top_matches(user_message: str, top_n: int = 4) -> str:
+def find_top_matches(user_message: str, top_n: int = 5) -> str:
     global faq_items
     if not faq_items:
         return "База FAQ пуста."
 
-    clean_msg = re.sub(r'[^\w\s]', '', user_message.lower())
+    # ЖЕСТКАЯ ОЧИСТКА ОТ ЗНАКОВ ПРЕПИНАНИЯ (решает проблему с вопросительным знаком)
+    # Заменяем все символы, кроме букв, цифр и пробелов, на пробелы, затем убираем лишние пробелы
+    clean_msg = re.sub(r'[^\w\s]', ' ', user_message.lower())
+    clean_msg = re.sub(r'\s+', ' ', clean_msg).strip()
+    
     user_words = set(clean_msg.split())
     
-    stop_words = {"что", "такое", "как", "где", "когда", "есть", "ли", "это", "кто", "могу", "мне", "меня", "какие", "у", "в", "на", "с", "по"}
+    # Расширенный список стоп-слов
+    stop_words = {"что", "такое", "как", "где", "когда", "есть", "ли", "это", "кто", "могу", "мне", "меня", "какие", "у", "в", "на", "с", "по", "для", "можно"}
     user_words = {w for w in user_words if len(w) > 2 and w not in stop_words}
     
     if not user_words:
-        return "Недостаточно слов для поиска."
+        return "Недостаточно ключевых слов для поиска."
 
     scored_items = []
     for item in faq_items:
@@ -114,11 +119,13 @@ def find_top_matches(user_message: str, top_n: int = 4) -> str:
         
         score = 0
         for w in user_words:
+            # Стемминг (обрезаем окончания для лучшего поиска)
             stem = w[:-2] if len(w) >= 6 else (w[:-1] if len(w) == 5 else w)
             if stem in full_text:
                 score += 1
         
-        if clean_msg in full_text:
+        # Если фраза целиком встречается в тексте (без знаков препинания)
+        if clean_msg in re.sub(r'[^\w\s]', ' ', full_text):
             score += 10
             
         scored_items.append((score, item))
@@ -130,7 +137,7 @@ def find_top_matches(user_message: str, top_n: int = 4) -> str:
         if score > 0:
             q = clean_text(item.get('question', ''))
             a = clean_text(item.get('answer', ''))
-            top_matches.append(f"Вопрос: {q}\nОтвет: {a}")
+            top_matches.append(f"Правило: {q}\nТекст: {a}")
 
     if not top_matches:
         return "Нет информации в базе."
@@ -138,16 +145,17 @@ def find_top_matches(user_message: str, top_n: int = 4) -> str:
     return "\n\n".join(top_matches)
 
 def get_groq_answer(user_message: str) -> str:
-    retrieved_faq = find_top_matches(user_message, top_n=4)
+    retrieved_faq = find_top_matches(user_message, top_n=5)
     
     system_prompt = (
-        "Ты — официальный информационный бот приемной комиссии РГСУ.\n"
-        "Твоя задача — строго передавать информацию из базы знаний (FAQ) пользователю.\n\n"
-        "ПРАВИЛА (ОЧЕНЬ ВАЖНО):\n"
-        "1. Отвечай СЛОВО В СЛОВО по тексту из базы знаний. Не придумывай от себя, не меняй смысл и не сокращай важные перечисления.\n"
-        "2. Удали любые технические метки, содержащие слово cite.\n"
-        "3. Если подходящего ответа нет в тексте ниже, отвечай СТРОГО одной фразой: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
-        f"=== БАЗА ЗНАНИЙ ===\n{retrieved_faq}"
+        "Ты — дружелюбный, официальный и компетентный консультант приемной комиссии РГСУ.\n"
+        "Твоя задача — отвечать на вопросы абитуриентов, используя ТОЛЬКО предоставленную Базу Знаний.\n\n"
+        "ПРАВИЛА ОТВЕТА (ОЧЕНЬ ВАЖНО):\n"
+        "1. БУДЬ ЧЕЛОВЕКОМ: Начинай ответ вежливо (например, «Здравствуйте!», «Конечно, сейчас подскажу.», «Смотрите...»). Формулируй ответ полными, красивыми предложениями. Не бросай сухие списки без контекста.\n"
+        "2. ОПИРАЙСЯ ТОЛЬКО НА БАЗУ: Вся информация в твоем ответе должна быть взята ИЗ СТРОК НИЖЕ. Ты можешь перефразировать текст для красоты, но факты менять нельзя.\n"
+        "3. ФОРМАТИРОВАНИЕ: Дели текст на абзацы (используй пустые строки). Если нужно — используй списки через дефис.\n"
+        "4. ОТСУТСТВИЕ ИНФОРМАЦИИ: Если в Базе Знаний нет ответа на вопрос пользователя, отвечай ТОЧНО этой фразой: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
+        f"=== БАЗА ЗНАНИЙ (ПРАВИЛА ПРИЕМА) ===\n{retrieved_faq}"
     )
       
     try:
@@ -157,12 +165,12 @@ def get_groq_answer(user_message: str) -> str:
                 {"role": "user", "content": user_message}
             ],
             model="openai/gpt-oss-120b",
-            temperature=0.0, 
-            max_tokens=500
+            temperature=0.2, # Вернули 0.2 для более человечной речи, но без сильных фантазий
+            max_tokens=600
         )
         return response.choices[0].message.content
     except:
-        return "Произошла ошибка при генерации ответа."
+        return "Произошла ошибка при обращении к серверу. Попробуйте позже."
 
 def send_message_to_max(target_id: str, text: str):
     if not MAX_BOT_TOKEN or not target_id:
@@ -247,7 +255,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running perfectly!"}
+    return {"status": "Bot is running. Human-like responses & punctuation fix active!"}
 
 @app.api_route("/webhook", methods=["GET", "POST"])
 async def max_webhook(request: Request, background_tasks: BackgroundTasks):
