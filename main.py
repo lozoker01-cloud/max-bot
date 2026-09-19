@@ -164,7 +164,7 @@ def find_top_matches(user_message: str, top_n: int = 4) -> str:
 
     return "\n\n".join(top_matches)
 
-def get_ai_answer(user_message: str, is_first_message: bool) -> str:
+def get_provod_ai_answer(user_message: str, is_first_message: bool) -> str:
     retrieved_faq = find_top_matches(user_message, top_n=4)
     
     if is_first_message:
@@ -183,11 +183,10 @@ def get_ai_answer(user_message: str, is_first_message: bool) -> str:
     )
       
     if not OPENAI_API_KEY:
-        return "🚨 ОШИБКА: Не задан OPENAI_API_KEY в переменных окружения Render."
+        return "🚨 ОШИБКА: Не задан API ключ в переменных окружения Render."
 
-    # Если ваш прокси использует другой адрес (например, https://api.proxyapi.ru/openai/v1/chat/completions), 
-    # замените ссылку ниже на адрес из инструкции вашего сервиса. По умолчанию используется стандартный OpenAI.
-    url = "https://api.openai.com/v1/chat/completions"
+    # Направляем запросы прямо на ваш прокси provod.ai
+    url = "https://api.provod.ai/v1/chat/completions"
     
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -210,7 +209,7 @@ def get_ai_answer(user_message: str, is_first_message: bool) -> str:
             return data["choices"][0]["message"]["content"]
         else:
             error_msg = data.get("error", {}).get("message", str(data))
-            return f"🚨 ОШИБКА API: {error_msg}"
+            return f"🚨 ОШИБКА PROVOD.AI: {error_msg}"
     except Exception as e:
         return f"🚨 ОШИБКА ЗАПРОСА: {str(e)}"
 
@@ -272,7 +271,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
     user_history[chat_id]["count"] += 1
     is_first_msg = (user_history[chat_id]["count"] == 1)
 
-    bot_reply = get_ai_answer(text, is_first_msg)
+    bot_reply = get_provod_ai_answer(text, is_first_msg)
     user_history[chat_id]["question"] = text
     user_history[chat_id]["answer"] = bot_reply
     
@@ -289,7 +288,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with Proxy/API Key & Tri-Layer Memory!"}
+    return {"status": "Bot is running with Provod.ai & Tri-Layer Memory!"}
 
 @app.get("/reload_faq")
 def api_reload_faq():
@@ -307,7 +306,7 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
         msg_block = data.get("message", {})
         message_text = (msg_block.get("body", {}).get("text") or msg_block.get("text") or data.get("text") or "")
         sender_info = msg_block.get("sender", {})
-        user_name = sender_info.get("name") or sender_info.get("username") | "Абитуриент"
+        user_name = sender_info.get("name") or sender_info.get("username") or "Абитуриент"
         chat_id = (msg_block.get("chat_id") or sender_info.get("user_id") or sender_info.get("id") or msg_block.get("recipient", {}).get("chat_id") or data.get("chat_id") or data.get("user_id") or "")
           
         if not chat_id and isinstance(msg_block, dict):
