@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request, BackgroundTasks
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 MAX_API_BASE = "https://platform-api2.max.ru"
 
@@ -164,7 +164,7 @@ def find_top_matches(user_message: str, top_n: int = 4) -> str:
 
     return "\n\n".join(top_matches)
 
-def get_free_ai_answer(user_message: str, is_first_message: bool) -> str:
+def get_deepseek_answer(user_message: str, is_first_message: bool) -> str:
     retrieved_faq = find_top_matches(user_message, top_n=4)
     
     if is_first_message:
@@ -182,18 +182,16 @@ def get_free_ai_answer(user_message: str, is_first_message: bool) -> str:
         f"=== БАЗА ЗНАНИЙ ===\n{retrieved_faq}"
     )
       
-    if not OPENROUTER_API_KEY:
-        return "🚨 ОШИБКА: Не задан OPENROUTER_API_KEY в переменных окружения Render."
+    if not DEEPSEEK_API_KEY:
+        return "🚨 ОШИБКА: Не задан DEEPSEEK_API_KEY в переменных окружения Render."
 
-    url = "https://openrouter.ai/api/v1/chat/completions"
+    url = "https://api.deepseek.com/chat/completions"
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://rgsu.net",
-        "X-Title": "RGSU Admission Bot"
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
     }
     payload = {
-        "model": "google/gemma-2-9b-it:free",
+        "model": "deepseek-chat",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
@@ -209,7 +207,7 @@ def get_free_ai_answer(user_message: str, is_first_message: bool) -> str:
             return data["choices"][0]["message"]["content"]
         else:
             error_msg = data.get("error", {}).get("message", str(data))
-            return f"🚨 ОШИБКА OPENROUTER: {error_msg}"
+            return f"🚨 ОШИБКА DEEPSEEK API: {error_msg}"
     except Exception as e:
         return f"🚨 ОШИБКА ЗАПРОСА: {str(e)}"
 
@@ -271,7 +269,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
     user_history[chat_id]["count"] += 1
     is_first_msg = (user_history[chat_id]["count"] == 1)
 
-    bot_reply = get_free_ai_answer(text, is_first_msg)
+    bot_reply = get_deepseek_answer(text, is_first_msg)
     user_history[chat_id]["question"] = text
     user_history[chat_id]["answer"] = bot_reply
     
@@ -288,7 +286,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with OpenRouter Free AI & Tri-Layer Memory!"}
+    return {"status": "Bot is running with DeepSeek & Tri-Layer Memory!"}
 
 @app.get("/reload_faq")
 def api_reload_faq():
