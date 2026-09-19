@@ -185,7 +185,8 @@ def get_provod_ai_answer(user_message: str, is_first_message: bool) -> str:
     if not OPENAI_API_KEY:
         return "🚨 ОШИБКА: Не задан API ключ в переменных окружения Render."
 
-    url = "https://api.provod.ai/v1/chat/completions"
+    # Исправленный адрес без лишнего /v1 (или с прямым указанием пути)
+    url = "https://api.provod.ai/chat/completions"
     
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -214,7 +215,6 @@ def get_provod_ai_answer(user_message: str, is_first_message: bool) -> str:
             else:
                 return f"🚨 ОШИБКА ОТВЕТА: {str(data)}"
         else:
-            # Безопасное извлечение ошибки без падения на строках
             if isinstance(data, dict):
                 err = data.get("error", {})
                 if isinstance(err, dict):
@@ -325,7 +325,7 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
           
         if not chat_id and isinstance(msg_block, dict):
             for k, v in msg_block.items():
-                if isinstance(v, dict) and "id" in v:
+                if isinstance(v, dict) and "id" v:
                     chat_id = v["id"]
                     break
 
