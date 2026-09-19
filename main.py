@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request, BackgroundTasks
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 MAX_API_BASE = "https://platform-api2.max.ru"
 
@@ -115,7 +115,7 @@ def clean_text(text: str) -> str:
     pattern = r"\[" + "c" + "ite:" + r"\s*\d+\]"
     return re.sub(pattern, "", text).strip()
 
-def find_top_matches(user_message: str, top_n: int = 4) -> str:
+def find_top_matches(user_message: str, top_n: int = 3) -> str:
     global faq_items
     if not faq_items:
         return "База пуста."
@@ -160,12 +160,12 @@ def find_top_matches(user_message: str, top_n: int = 4) -> str:
             top_matches.append(f"Контекст: {q}\nТекст: {a}")
 
     if not top_matches:
-        return "Нет информации в базе."
+        return "К сожалению, у меня нет точной информации по данному вопросу."
 
     return "\n\n".join(top_matches)
 
-def get_provod_ai_answer(user_message: str, is_first_message: bool) -> str:
-    retrieved_faq = find_top_matches(user_message, top_n=4)
+def get_groq_answer(user_message: str, is_first_message: bool) -> str:
+    retrieved_faq = find_top_matches(user_message, top_n=3)
     
     if is_first_message:
         greeting_rule = "1. БУДЬ ЧЕЛОВЕКОМ: Начни ответ вежливо (например, «Здравствуйте!», «Добрый день!»)."
@@ -182,47 +182,33 @@ def get_provod_ai_answer(user_message: str, is_first_message: bool) -> str:
         f"=== БАЗА ЗНАНИЙ ===\n{retrieved_faq}"
     )
       
-    if not OPENAI_API_KEY:
-        return "🚨 ОШИБКА: Не задан API ключ в переменных окружения Render."
+    if not GROQ_API_KEY:
+        return "🚨 ОШИБКА: Не задан GROQ_API_KEY в переменных окружения Render."
 
-    url = "https://api.provod.ai/v1/chat/completions"
+    url = "https://api.groq.com/openai/v1/chat/completions"
     
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "gpt-4o-mini",
+        "model": "llama-3.1-8b-instant",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
         ],
         "temperature": 0.2,
-        "max_tokens": 600
+        "max_tokens": 500
     }
     
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=20)
-        try:
-            data = res.json()
-        except:
-            data = res.text
-
+        res = requests.post(url, headers=headers, json=payload, timeout=15)
+        data = res.json()
         if res.status_code == 200:
-            if isinstance(data, dict):
-                return data["choices"][0]["message"]["content"]
-            else:
-                return f"🚨 ОШИБКА ОТВЕТА: {str(data)}"
+            return data["choices"][0]["message"]["content"]
         else:
-            if isinstance(data, dict):
-                err = data.get("error", {})
-                if isinstance(err, dict):
-                    error_msg = err.get("message", str(data))
-                else:
-                    error_msg = str(err)
-            else:
-                error_msg = str(data)
-            return f"🚨 ОШИБКА PROVOD.AI ({res.status_code}): {error_msg}"
+            err_msg = data.get("error", {}).get("message", str(data))
+            return f"🚨 ОШИБКА GROQ ({res.status_code}): {err_msg}"
     except Exception as e:
         return f"🚨 ОШИБКА ЗАПРОСА: {str(e)}"
 
@@ -284,7 +270,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
     user_history[chat_id]["count"] += 1
     is_first_msg = (user_history[chat_id]["count"] == 1)
 
-    bot_reply = get_provod_ai_answer(text, is_first_msg)
+    bot_reply = get_groq_answer(text, is_first_msg)
     user_history[chat_id]["question"] = text
     user_history[chat_id]["answer"] = bot_reply
     
@@ -301,7 +287,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with Provod.ai & Tri-Layer Memory!"}
+    return {"status": "Bot is running with Groq (Llama-3.1-8b) & Tri-Layer Memory!"}
 
 @app.get("/reload_faq")
 def api_reload_faq():
