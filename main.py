@@ -5,11 +5,11 @@ import urllib3
 import traceback
 import re
 from fastapi import FastAPI, Request, BackgroundTasks
-from groq import Groq
+from openai import OpenAI
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 MAX_API_BASE = "https://platform-api2.max.ru"
 
@@ -20,7 +20,7 @@ OPERATOR_ID = "20195632"
 GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbvH9-hsOZo7ADggN9jfME4cTgqL1r5bGAJXrtWor-iObdFFlJ3L3Cs6tWqS0X-6b8xQ/exec"
 
 app = FastAPI()
-groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 user_history = {}
 faq_items = []
@@ -52,7 +52,7 @@ def flatten_faq(data):
     return flat_list
 
 def load_knowledge_base():
-    """Собирает знания из 3 источников: JSON, TXT и Google Таблицы"""
+    """Собирает знания из 3 источников"""
     global faq_items
     faq_items = []
     
@@ -117,7 +117,7 @@ def clean_text(text: str) -> str:
     pattern = r"\[" + "c" + "ite:" + r"\s*\d+\]"
     return re.sub(pattern, "", text).strip()
 
-def find_top_matches(user_message: str, top_n: int = 5) -> str:
+def find_top_matches(user_message: str, top_n: int = 4) -> str:
     global faq_items
     if not faq_items:
         return "База пуста."
@@ -166,8 +166,8 @@ def find_top_matches(user_message: str, top_n: int = 5) -> str:
 
     return "\n\n".join(top_matches)
 
-def get_groq_answer(user_message: str, is_first_message: bool) -> str:
-    retrieved_faq = find_top_matches(user_message, top_n=5)
+def get_gpt_answer(user_message: str, is_first_message: bool) -> str:
+    retrieved_faq = find_top_matches(user_message, top_n=4)
     
     if is_first_message:
         greeting_rule = "1. БУДЬ ЧЕЛОВЕКОМ: Начни ответ вежливо (например, «Здравствуйте!», «Добрый день!»)."
@@ -178,27 +178,25 @@ def get_groq_answer(user_message: str, is_first_message: bool) -> str:
         "Ты — дружелюбный, официальный и компетентный консультант приемной комиссии РГСУ.\n"
         "Твоя задача — отвечать на вопросы абитуриентов, используя ТОЛЬКО предоставленную Базу Знаний.\n\n"
         "ПРАВИЛА ОТВЕТА (ОЧЕНЬ ВАЖНО):\n"
-        f"{greeting_rule} Формулируй ответ полными, красивыми предложениями. Не бросай сухие списки без контекста.\n"
-        "2. ОПИРАЙСЯ ТОЛЬКО НА БАЗУ: Вся информация в твоем ответе должна быть взята ИЗ СТРОК НИЖЕ. Ты можешь перефразировать текст, но факты менять нельзя.\n"
-        "3. ФОРМАТИРОВАНИЕ: Дели текст на абзацы. Если нужно — используй списки через дефис.\n"
-        "4. ОТСУТСТВИЕ ИНФОРМАЦИИ: Если в Базе Знаний нет ответа, отвечай ТОЧНО этой фразой: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
-        f"=== БАЗА ЗНАНИЙ (ПРАВИЛА ПРИЕМА) ===\n{retrieved_faq}"
+        f"{greeting_rule} Формулируй ответ полными, красивыми предложениями.\n"
+        "2. ОПИРАЙСЯ ТОЛЬКО НА БАЗУ: Вся информация в твоем ответе должна быть взята ИЗ СТРОК НИЖЕ.\n"
+        "3. ОТСУТСТВИЕ ИНФОРМАЦИИ: Если в Базе Знаний нет ответа, отвечай ТОЧНО этой фразой: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
+        f"=== БАЗА ЗНАНИЙ ===\n{retrieved_faq}"
     )
       
     try:
-        response = groq_client.chat.completions.create(
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
-            model="openai/gpt-oss-120b",
             temperature=0.2, 
             max_tokens=600
         )
         return response.choices[0].message.content
     except Exception as e:
-        # Временная отладка: покажет реальную ошибку прямо в чате МАКС
-        return f"🚨 ОШИБКА GROQ: {str(e)}"
+        return f"🚨 ОШИБКА GPT: {str(e)}"
 
 def send_message_to_max(target_id: str, text: str):
     if not MAX_BOT_TOKEN or not target_id:
@@ -258,7 +256,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
     user_history[chat_id]["count"] += 1
     is_first_msg = (user_history[chat_id]["count"] == 1)
 
-    bot_reply = get_groq_answer(text, is_first_msg)
+    bot_reply = get_gpt_answer(text, is_first_msg)
     user_history[chat_id]["question"] = text
     user_history[chat_id]["answer"] = bot_reply
     
@@ -271,13 +269,11 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         final_reply = bot_reply
 
     send_message_to_max(chat_id, final_reply)
-    
-    # Лог отправляется в любом случае, даже если ИИ выдал ошибку
     log_to_google_sheet(user_name, chat_id, text, bot_reply)
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with Tri-Layer Memory (JSON + TXT + Sheets)!"}
+    return {"status": "Bot is running with GPT-4o-mini & Tri-Layer Memory!"}
 
 @app.get("/reload_faq")
 def api_reload_faq():
