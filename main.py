@@ -133,7 +133,7 @@ def get_groq_answer(user_message: str) -> str:
         ],
         model="openai/gpt-oss-120b",
         temperature=0.1, 
-        max_tokens=300
+        max_tokens=400
     )
     return response.choices[0].message.content
 
@@ -153,14 +153,15 @@ def send_message_to_max(target_id: str, text: str, include_button: bool = False)
             "text": text
         }
         
-        # Добавляем кнопку вызова оператора, если это ответ бота
+        # ИСПРАВЛЕНИЕ: Оставлен только один, самый строгий и правильный вариант JSON для кнопки МАКС
         if include_button:
-            button_payload = [
-                [{"text": "👤 Связаться с оператором", "callback_data": "operator_request"}]
-            ]
-            # МАКС поддерживает разные стандарты кнопок, отправляем оба варианта для надежности
-            payload["reply_markup"] = {"inline_keyboard": button_payload}
-            payload["keyboard"] = {"inline": True, "buttons": button_payload}
+            payload["reply_markup"] = {
+                "inline_keyboard": [
+                    [
+                        {"text": "👤 Связаться с оператором", "callback_data": "operator_request"}
+                    ]
+                ]
+            }
 
         try:
             res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params=params, json=payload, verify=False, timeout=5)
@@ -169,28 +170,36 @@ def send_message_to_max(target_id: str, text: str, include_button: bool = False)
         except Exception as e:
             print(f"Ошибка отправки: {e}")
 
-# Фоновые задачи для предотвращения дублирования сообщений
+def transfer_to_operator(user_id: str):
+    # 1. Пишем пользователю
+    send_message_to_max(user_id, "⏳ Переключаю вас на специалиста приемной комиссии. Пожалуйста, подождите, скоро вам ответят.", include_button=False)
+    
+    # 2. Уведомляем администратора (Степана) на телефон
+    alert_text = f"🚨 ВНИМАНИЕ!\nПользователь запросил помощь оператора.\nЕго ID для связи: {user_id}\n\nВы можете написать ему напрямую."
+    send_message_to_max(OPERATOR_PHONE, alert_text, include_button=False)
+
+# Фоновые задачи (чтобы бот не отправлял ответы по два раза)
 def process_user_message(chat_id: str, text: str):
     if text.lower() in ["/start", "старт", "привет"]:
         reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, и я постараюсь помочь!"
         send_message_to_max(chat_id, reply, include_button=False)
         return
         
+    # Триггер на слово "оператор" - если кнопка вдруг не нажалась
+    if "оператор" in text.lower():
+        transfer_to_operator(chat_id)
+        return
+        
     bot_reply = get_groq_answer(text)
-    send_message_to_max(chat_id, bot_reply, include_button=True)
-
-def transfer_to_operator(user_id: str):
-    # Пишем пользователю, что переводим его
-    send_message_to_max(user_id, "⏳ Переключаю вас на специалиста приемной комиссии. Пожалуйста, подождите, скоро вам ответят.", include_button=False)
     
-    # Отправляем уведомление вам на телефон/в чат
-    alert_text = f"🚨 ВНИМАНИЕ!\nПользователь не получил ответа от бота и запросил помощь оператора.\nID пользователя для связи: {user_id}"
-    send_message_to_max(OPERATOR_PHONE, alert_text, include_button=False)
-
+    # Автоматическая приписка к каждому ответу
+    bot_reply += "\n\n---\n*Если я не смог ответить на ваш вопрос, нажмите кнопку ниже или напишите слово «Оператор».*"
+    
+    send_message_to_max(chat_id, bot_reply, include_button=True)
 
 @app.get("/")
 def root():
-    return {"status": "RGSU Bot is running with Buttons and Background Tasks!"}
+    return {"status": "RGSU Bot is running with Buttons and Formatting!"}
 
 @app.api_route("/webhook", methods=["GET", "POST"])
 async def max_webhook(request: Request, background_tasks: BackgroundTasks):
@@ -212,7 +221,6 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
             sender_id = callback_info.get("from", {}).get("user_id") or callback_info.get("from", {}).get("id") or ""
             
             if cb_data == "operator_request" and sender_id:
-                # Запускаем перевод на оператора в фоне
                 background_tasks.add_task(transfer_to_operator, str(sender_id))
             
             return {"status": "ok"}
@@ -246,7 +254,6 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
                         chat_id = v["user_id"]
                         break
 
-        # Если есть текст и ID, ЗАПУСКАЕМ ОБРАБОТКУ В ФОНЕ (решает проблему дублирования)
         if message_text and chat_id:
             background_tasks.add_task(process_user_message, str(chat_id), message_text)
           
@@ -254,5 +261,5 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
         print(f"ОШИБКА В WEBHOOK: {type(e).__name__}: {e}")
         traceback.print_exc()
           
-    # Мгновенно возвращаем ОК серверу МАКС, чтобы он не спамил дублями
+    # Мгновенно возвращаем ОК серверу МАКС, чтобы он не слал дубли
     return {"status": "ok"}
