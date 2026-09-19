@@ -17,7 +17,7 @@ MAX_API_BASE = "https://platform-api2.max.ru"
 OPERATOR_ID = "20195632" 
 
 # ВСТАВЬТЕ СЮДА ССЫЛКУ ИЗ GOOGLE APPS SCRIPT
-GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbxTEFZ3OI1cTCEaoDhxtAkpAkGPswJK5_Nh-Cd9kdpCVEZPhpK0iyJzS-FnG9uzKnBTXg/exec"
+GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbyH9-hsOZo7ADggN9jfME4cTgqL1r5bGAJXrtWor-irObdFFlj3LX3cS6tWqS0X-6b8xQ/exec"
 
 app = FastAPI()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
