@@ -14,7 +14,7 @@ MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 MAX_API_BASE = "https://platform-api2.max.ru"
 
 # СЮДА НУЖНО БУДЕТ ВПИСАТЬ ВАШ ВНУТРЕННИЙ ID, когда вы его узнаете
-OPERATOR_ID = "" 
+OPERATOR_ID = "2019532" 
 
 app = FastAPI()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
