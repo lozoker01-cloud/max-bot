@@ -193,7 +193,7 @@ def get_free_ai_answer(user_message: str, is_first_message: bool) -> str:
         "X-Title": "RGSU Admission Bot"
     }
     payload = {
-        "model": "meta-llama/llama-3.1-8b-instruct:free",
+        "model": "google/gemma-2-9b-it:free",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
