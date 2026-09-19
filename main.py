@@ -14,12 +14,12 @@ MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 MAX_API_BASE = "https://platform-api2.max.ru"
 
 # ВСТАВЬТЕ СЮДА ВАШ ВНУТРЕННИЙ ID
-OPERATOR_ID = "20195632" 
+OPERATOR_ID = "ВСТАВИТЬ_СЮДА" 
 
 app = FastAPI()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# Оперативная память для хранения истории диалогов (чтобы передавать оператору)
+# Оперативная память для хранения истории диалогов
 user_history = {}
 
 print("Загрузка базы знаний (FAQ)...")
@@ -85,7 +85,7 @@ def startup_event():
     register_webhook()
 
 def clean_text(text: str) -> str:
-    # Удаляем артефакты вроде[cite: 17]
+    # Исправленное удаление артефактов[cite: 17]
     return re.sub(r'\', '', text).strip()
 
 def find_top_matches(user_message: str, top_n: int = 4) -> str:
@@ -107,7 +107,6 @@ def find_top_matches(user_message: str, top_n: int = 4) -> str:
         if not isinstance(item, dict):
             continue
         
-        # Очищаем текст базы от прямо во время поиска
         q_text = clean_text(item.get('question', '')).lower()
         a_text = clean_text(item.get('answer', '')).lower()
         full_text = q_text + " " + a_text
@@ -145,7 +144,7 @@ def get_groq_answer(user_message: str) -> str:
         "Твоя задача — строго передавать информацию из базы знаний (FAQ) пользователю.\n\n"
         "ПРАВИЛА (ОЧЕНЬ ВАЖНО):\n"
         "1. Отвечай СЛОВО В СЛОВО по тексту из базы знаний. Не придумывай от себя, не меняй смысл и не сокращай важные перечисления.\n"
-        "2. Удали любые технические скобки вроде из ответа.\n"
+        "2. Удали любые технические скобки из ответа.\n"
         "3. Если подходящего ответа нет в тексте ниже, отвечай СТРОГО одной фразой: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
         f"=== БАЗА ЗНАНИЙ ===\n{retrieved_faq}"
     )
@@ -157,7 +156,7 @@ def get_groq_answer(user_message: str) -> str:
                 {"role": "user", "content": user_message}
             ],
             model="openai/gpt-oss-120b",
-            temperature=0.0, # Температура 0.0 — бот вообще перестанет фантазировать
+            temperature=0.0, 
             max_tokens=500
         )
         return response.choices[0].message.content
@@ -188,10 +187,8 @@ def send_message_to_max(target_id: str, text: str):
             pass
 
 def transfer_to_operator(user_id: str, user_name: str):
-    # Пишем пользователю
     send_message_to_max(user_id, "⏳ Переключаю вас на специалиста приемной комиссии. Пожалуйста, подождите, скоро вам ответят.")
     
-    # Достаем историю
     history = user_history.get(user_id, {})
     last_q = history.get("question", "Неизвестно (сразу запросил оператора)")
     last_a = history.get("answer", "Нет ответа")
@@ -209,7 +206,6 @@ def transfer_to_operator(user_id: str, user_name: str):
         send_message_to_max(OPERATOR_ID, alert_text)
 
 def process_user_message(chat_id: str, text: str, user_name: str):
-    # ФУНКЦИЯ ОТВЕТА ОТ ОПЕРАТОРА
     if str(chat_id) == str(OPERATOR_ID) and text.lower().startswith("/ответ"):
         parts = text.split(" ", 2)
         if len(parts) >= 3:
@@ -234,16 +230,13 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         transfer_to_operator(chat_id, user_name)
         return
         
-    # Бот генерирует ответ
     bot_reply = get_groq_answer(text)
     
-    # Сохраняем в память для передачи оператору
     user_history[chat_id] = {
         "question": text,
         "answer": bot_reply
     }
     
-    # Добавляем приписку
     if "к сожалению" not in bot_reply.lower():
         final_reply = bot_reply + "\n\n---\n*Если я не смог полностью ответить на ваш вопрос, напишите слово «Оператор».*"
     else:
@@ -272,7 +265,6 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
             ""
         )
         
-        # Пытаемся достать имя пользователя
         sender_info = msg_block.get("sender", {})
         user_name = sender_info.get("name") or sender_info.get("username") or "Абитуриент"
           
