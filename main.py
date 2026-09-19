@@ -16,8 +16,8 @@ MAX_API_BASE = "https://platform-api2.max.ru"
 # ВСТАВЬТЕ СЮДА ВАШ ВНУТРЕННИЙ ID
 OPERATOR_ID = "20195632" 
 
-# ВСТАВЬТЕ СЮДА ССЫЛКУ ИЗ GOOGLE APPS SCRIPT
-GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbyH9-hsOZo7ADggN9jfME4cTgqL1r5bGAJXrtWor-irObdFFlj3LX3cS6tWqS0X-6b8xQ/exec"
+# ВСТАВЬТЕ СЮДА АКТУАЛЬНУЮ ССЫЛКУ ИЗ GOOGLE APPS SCRIPT (БЕЗ СЛЕША НА КОНЦЕ)
+GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbvH9-hsOZo7ADggN9jfME4cTgqL1r5bGAJXrtWor-iObdFFlJ3L3Cs6tWqS0X-6b8xQ/exec"
 
 app = FastAPI()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
@@ -68,7 +68,6 @@ def load_knowledge_base():
     try:
         with open('pravila.txt', 'r', encoding='utf-8') as f:
             content = f.read()
-            # Разбиваем текст на абзацы (правила)
             paragraphs = [p.strip() for p in content.split('\n\n') if len(p.strip()) > 20]
             for p in paragraphs:
                 faq_items.append({"question": "Официальные правила приема РГСУ", "answer": p})
@@ -197,8 +196,9 @@ def get_groq_answer(user_message: str, is_first_message: bool) -> str:
             max_tokens=600
         )
         return response.choices[0].message.content
-except Exception as e:
-        return f"🚨 ОШИБКА: {str(e)}"
+    except Exception as e:
+        # Временная отладка: покажет реальную ошибку прямо в чате МАКС
+        return f"🚨 ОШИБКА GROQ: {str(e)}"
 
 def send_message_to_max(target_id: str, text: str):
     if not MAX_BOT_TOKEN or not target_id:
@@ -262,19 +262,23 @@ def process_user_message(chat_id: str, text: str, user_name: str):
     user_history[chat_id]["question"] = text
     user_history[chat_id]["answer"] = bot_reply
     
-    if "к сожалению" not in bot_reply.lower():
-        final_reply = bot_reply + "\n\n---\n*Если я не смог полностью ответить на ваш вопрос, напишите слово «Оператор».*"
+    if "🚨 ОШИБКА" not in bot_reply:
+        if "к сожалению" not in bot_reply.lower():
+            final_reply = bot_reply + "\n\n---\n*Если я не смог полностью ответить на ваш вопрос, напишите слово «Оператор».*"
+        else:
+            final_reply = bot_reply + "\n\n*Для связи со специалистом напишите слово «Оператор».*"
     else:
-        final_reply = bot_reply + "\n\n*Для связи со специалистом напишите слово «Оператор».*"
-        
+        final_reply = bot_reply
+
     send_message_to_max(chat_id, final_reply)
+    
+    # Лог отправляется в любом случае, даже если ИИ выдал ошибку
     log_to_google_sheet(user_name, chat_id, text, bot_reply)
 
 @app.get("/")
 def root():
     return {"status": "Bot is running with Tri-Layer Memory (JSON + TXT + Sheets)!"}
 
-# СЕКРЕТНАЯ КНОПКА ДЛЯ ТАБЛИЦЫ: ПРИКАЗАТЬ БОТУ ПЕРЕЗАГРУЗИТЬ БАЗУ
 @app.get("/reload_faq")
 def api_reload_faq():
     load_knowledge_base()
