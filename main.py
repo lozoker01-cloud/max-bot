@@ -5,7 +5,6 @@ import urllib3
 import traceback
 import re
 from fastapi import FastAPI, Request, BackgroundTasks
-from openai import OpenAI
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -20,7 +19,6 @@ OPERATOR_ID = "20195632"
 GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbxnWcBZKEyrvlZ0FeiHJobR_DcsU_q5QHjnyH9ImfJ8p76RBeLfkR7CoKxqgF0Dqmpvhg/exec"
 
 app = FastAPI()
-openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 user_history = {}
 faq_items = []
@@ -184,19 +182,34 @@ def get_gpt_answer(user_message: str, is_first_message: bool) -> str:
         f"=== БАЗА ЗНАНИЙ ===\n{retrieved_faq}"
     )
       
+    if not OPENAI_API_KEY:
+        return "🚨 ОШИБКА: Не задан OPENAI_API_KEY в переменных окружения Render."
+
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ],
+        "temperature": 0.2,
+        "max_tokens": 600
+    }
+    
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
-            temperature=0.2, 
-            max_tokens=600
-        )
-        return response.choices[0].message.content
+        res = requests.post(url, headers=headers, json=payload, timeout=15)
+        data = res.json()
+        if res.status_code == 200:
+            return data["choices"][0]["message"]["content"]
+        else:
+            error_msg = data.get("error", {}).get("message", str(data))
+            return f"🚨 ОШИБКА OPENAI API: {error_msg}"
     except Exception as e:
-        return f"🚨 ОШИБКА GPT: {str(e)}"
+        return f"🚨 ОШИБКА ЗАПРОСА: {str(e)}"
 
 def send_message_to_max(target_id: str, text: str):
     if not MAX_BOT_TOKEN or not target_id:
@@ -273,7 +286,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with GPT-4o-mini & Tri-Layer Memory!"}
+    return {"status": "Bot is running with OpenAI requests & Tri-Layer Memory!"}
 
 @app.get("/reload_faq")
 def api_reload_faq():
