@@ -17,7 +17,7 @@ MAX_API_BASE = "https://platform-api2.max.ru"
 OPERATOR_ID = "20195632" 
 
 # ВСТАВЬТЕ СЮДА АКТУАЛЬНУЮ ССЫЛКУ ИЗ GOOGLE APPS SCRIPT (БЕЗ СЛЕША НА КОНЦЕ)
-GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbvH9-hsOZo7ADggN9jfME4cTgqL1r5bGAJXrtWor-iObdFFlJ3L3Cs6tWqS0X-6b8xQ/exec"
+GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbxnWcBZKEyrvlZ0FeiHJobR_DcsU_q5QHjnyH9ImfJ8p76RBeLfkR7CoKxqgF0Dqmpvhg/exec"
 
 app = FastAPI()
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
