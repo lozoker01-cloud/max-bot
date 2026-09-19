@@ -3,7 +3,7 @@ import json
 import requests
 import urllib3
 import traceback
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, BackgroundTasks
 from groq import Groq
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -11,6 +11,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 MAX_API_BASE = "https://platform-api2.max.ru"
+OPERATOR_PHONE = "+79637862725" # Ваш номер для уведомлений
 
 app = FastAPI()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
@@ -23,16 +24,6 @@ try:
 except Exception as e:
     print(f"Ошибка загрузки faq_data.json: {e}")
     faq_raw = {}
-
-print("Загрузка правил приема и скриптов...")
-pravila_text = ""
-try:
-    with open('pravila.txt', 'r', encoding='utf-8') as f:
-        # Считываем до 25 000 символов, чтобы охватить все слитые скрипты и правила
-        pravila_text = f.read()[:25000] 
-    print("Правила приема успешно загружены!")
-except Exception as e:
-    print(f"Файл pravila.txt не найден: {e}")
 
 def flatten_faq(data):
     flat_list = []
@@ -125,17 +116,14 @@ def get_groq_answer(user_message: str) -> str:
     
     system_prompt = (
         "Ты — официальный информационный бот приемной комиссии РГСУ для соцсетей.\n"
-        "ТВОЙ АЛГОРИТМ РАБОТЫ ПЕРЕД ОТВЕТОМ (выполняй внутренне, пользователю выдавай только финальный результат):\n"
-        "1. Проанализируй ОФИЦИАЛЬНЫЕ ПРАВИЛА ПРИЕМА (ниже).\n"
-        "2. Проанализируй СКРИПТЫ И ЧАСТЫЕ ВОПРОСЫ (ниже).\n"
-        "3. Сформируй ответ ТОЛЬКО на основе совпадений из этих двух блоков.\n\n"
-        "ПРАВИЛА ФОРМИРОВАНИЯ ОТВЕТА:\n"
-        "- КРАТКОСТЬ: Ответ должен состоять из 2-4 предложений сплошного текста. Никаких таблиц, заголовков или длинных списков.\n"
-        "- СЛОЖНЫЕ ВОПРОСЫ: Если вопрос требует расчетов, спорный, нестандартный или состоит из множества условий, дай краткий базовый ответ и ОБЯЗАТЕЛЬНО добавь фразу: «Для разбора вашей ситуации свяжитесь с приёмной комиссией: +7-495-255-67-67 или pk@rgsu.net».\n"
-        "- ЗАПРЕТ НА ФАНТАЗИИ: Если информации нет в предоставленных правилах или скриптах, отвечай строго: «К сожалению, у меня нет точной информации по данному вопросу. Пожалуйста, обратитесь напрямую в приемную комиссию по телефону +7-495-255-67-67».\n"
-        "- СТИЛЬ: Живой, вежливый, понятный сплошной текст.\n\n"
-        f"=== СКРИПТЫ И ЧАСТЫЕ ВОПРОСЫ (FAQ) ===\n{retrieved_faq}\n\n"
-        f"=== ОФИЦИАЛЬНЫЕ ПРАВИЛА ПРИЕМА РГСУ ===\n{pravila_text}"
+        "Отвечай ТОЛЬКО на основе предоставленных ниже Частых Вопросов (FAQ).\n\n"
+        "ТВОИ ПРАВИЛА ОФОРМЛЕНИЯ ТЕКСТА (ЭТО КРИТИЧЕСКИ ВАЖНО):\n"
+        "1. ОБЯЗАТЕЛЬНО ставь точку в конце последнего предложения. Ни один твой ответ не должен обрываться без точки.\n"
+        "2. ОБЯЗАТЕЛЬНО дели текст на смысловые абзацы. Между абзацами должна быть пустая строка. Никогда не пиши сплошной стеной текста!\n"
+        "3. Если перечисляешь факты, используй списки через дефис (-).\n"
+        "4. Ответ должен быть емким, вежливым и понятным (3-5 предложений).\n"
+        "5. Если информации нет в FAQ, отвечай: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
+        f"=== ЧАСТЫЕ ВОПРОСЫ (FAQ) ===\n{retrieved_faq}"
     )
       
     response = groq_client.chat.completions.create(
@@ -145,14 +133,14 @@ def get_groq_answer(user_message: str) -> str:
         ],
         model="openai/gpt-oss-120b",
         temperature=0.1, 
-        max_tokens=250 # Ограничиваем токенами, чтобы ответ физически не мог быть слишком длинным
+        max_tokens=300
     )
     return response.choices[0].message.content
 
-def send_message_to_max(target_id: str, text: str):
+def send_message_to_max(target_id: str, text: str, include_button: bool = False):
     if not MAX_BOT_TOKEN:
-        print("Ошибка: MAX_BOT_TOKEN пустой!")
         return
+    
     headers = {
         "Authorization": f"{MAX_BOT_TOKEN}",
         "Content-Type": "application/json"
@@ -164,29 +152,73 @@ def send_message_to_max(target_id: str, text: str):
             id_param: target_id,
             "text": text
         }
+        
+        # Добавляем кнопку вызова оператора, если это ответ бота
+        if include_button:
+            button_payload = [
+                [{"text": "👤 Связаться с оператором", "callback_data": "operator_request"}]
+            ]
+            # МАКС поддерживает разные стандарты кнопок, отправляем оба варианта для надежности
+            payload["reply_markup"] = {"inline_keyboard": button_payload}
+            payload["keyboard"] = {"inline": True, "buttons": button_payload}
+
         try:
             res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params=params, json=payload, verify=False, timeout=5)
-            print(f"Ответ МАКС при отправке ({id_param}): {res.status_code} {res.text}")
             if res.status_code == 200:
                 break
         except Exception as e:
-            print(f"Ошибка отправки сообщения в МАКС ({id_param}): {e}")
+            print(f"Ошибка отправки: {e}")
+
+# Фоновые задачи для предотвращения дублирования сообщений
+def process_user_message(chat_id: str, text: str):
+    if text.lower() in ["/start", "старт", "привет"]:
+        reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, и я постараюсь помочь!"
+        send_message_to_max(chat_id, reply, include_button=False)
+        return
+        
+    bot_reply = get_groq_answer(text)
+    send_message_to_max(chat_id, bot_reply, include_button=True)
+
+def transfer_to_operator(user_id: str):
+    # Пишем пользователю, что переводим его
+    send_message_to_max(user_id, "⏳ Переключаю вас на специалиста приемной комиссии. Пожалуйста, подождите, скоро вам ответят.", include_button=False)
+    
+    # Отправляем уведомление вам на телефон/в чат
+    alert_text = f"🚨 ВНИМАНИЕ!\nПользователь не получил ответа от бота и запросил помощь оператора.\nID пользователя для связи: {user_id}"
+    send_message_to_max(OPERATOR_PHONE, alert_text, include_button=False)
+
 
 @app.get("/")
 def root():
-    return {"status": "RGSU Bot is running online!"}
+    return {"status": "RGSU Bot is running with Buttons and Background Tasks!"}
 
 @app.api_route("/webhook", methods=["GET", "POST"])
-async def max_webhook(request: Request):
+async def max_webhook(request: Request, background_tasks: BackgroundTasks):
     if request.method == "GET":
         return {"status": "Webhook is active!"}
       
     try:
         body_bytes = await request.body()
         data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        
+        update_type = data.get("update_type", "")
+        
+        # ОБРАБОТКА НАЖАТИЯ НА КНОПКУ (Callback)
+        if update_type == "message_callback" or "callback" in data:
+            callback_info = data.get("callback", {})
+            cb_data = callback_info.get("data") or data.get("callback_data")
+            
+            # Извлекаем ID того, кто нажал кнопку
+            sender_id = callback_info.get("from", {}).get("user_id") or callback_info.get("from", {}).get("id") or ""
+            
+            if cb_data == "operator_request" and sender_id:
+                # Запускаем перевод на оператора в фоне
+                background_tasks.add_task(transfer_to_operator, str(sender_id))
+            
+            return {"status": "ok"}
           
+        # ОБРАБОТКА ОБЫЧНОГО СООБЩЕНИЯ
         msg_block = data.get("message", {})
-          
         message_text = (
             msg_block.get("body", {}).get("text") or 
             msg_block.get("text") or 
@@ -214,21 +246,13 @@ async def max_webhook(request: Request):
                         chat_id = v["user_id"]
                         break
 
-        if not message_text or not chat_id:
-            return {"status": "ok"}
-
-        print(f"УСПЕХ! ID получателя: {chat_id}, Текст: {message_text}")
-
-        if message_text.lower() in ["/start", "старт", "привет"]:
-            reply = "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении!"
-            send_message_to_max(str(chat_id), reply)
-            return {"status": "ok"}
-
-        bot_reply = get_groq_answer(message_text)
-        send_message_to_max(str(chat_id), bot_reply)
+        # Если есть текст и ID, ЗАПУСКАЕМ ОБРАБОТКУ В ФОНЕ (решает проблему дублирования)
+        if message_text and chat_id:
+            background_tasks.add_task(process_user_message, str(chat_id), message_text)
           
     except Exception as e:
         print(f"ОШИБКА В WEBHOOK: {type(e).__name__}: {e}")
         traceback.print_exc()
           
+    # Мгновенно возвращаем ОК серверу МАКС, чтобы он не спамил дублями
     return {"status": "ok"}
