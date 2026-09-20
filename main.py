@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request, BackgroundTasks
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Жесткая очистка ключей
+# Жесткая очистка ключей от случайных пробелов и переносов строк
 raw_groq_key = os.getenv("GROQ_API_KEY", "")
 GROQ_API_KEY = raw_groq_key.replace("\n", "").replace("\r", "").strip()
 
@@ -20,8 +20,10 @@ MAX_API_BASE = "https://platform-api2.max.ru"
 # ВСТАВЬТЕ СЮДА ВАШ ВНУТРЕННИЙ ID
 OPERATOR_ID = "20195632" 
 
-# ВСТАВЬТЕ СЮДА АКТУАЛЬНУЮ ССЫЛКУ ИЗ GOOGLE APPS SCRIPT
-GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbxnWcBZKEyrvlZ0FeiHJobR_DcsU_q5QHjnyH9ImfJ8p76RBeLfkR7CoKxqgF0Dqmpvhg/exec"
+# =====================================================================
+# 🛑 ВНИМАНИЕ! ЗАМЕНИТЕ ЭТУ ССЫЛКУ НА ВАШУ НАСТОЯЩУЮ ИЗ GOOGLE APPS SCRIPT
+# =====================================================================
+GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbzg8uTKzlKJkMY1MeRsg_FFYuv2LTHwuwdp5tlFNh4yn2y_pBzG-kzWDLANRwuQKv-dFQ/exec"
 
 app = FastAPI()
 
@@ -78,7 +80,7 @@ def load_knowledge_base():
         print(f"Ошибка TXT: {e}")
 
     print("Загрузка 3/3: Google Таблицы (Динамическая база)...")
-    if GOOGLE_SHEET_WEBHOOK:
+    if GOOGLE_SHEET_WEBHOOK and "AKfycbvH9" not in GOOGLE_SHEET_WEBHOOK:
         try:
             res = requests.get(GOOGLE_SHEET_WEBHOOK, timeout=10)
             if res.status_code == 200:
@@ -145,12 +147,10 @@ def find_top_matches(user_message: str, top_n: int = 2) -> str:
         
         score = 0
         for kw in keywords:
-            # Берем корень слова для надежности поиска
             stem = kw[:-2] if len(kw) >= 5 else kw
             if stem in full_text_lower:
                 score += 1
         
-        # Полное совпадение фразы дает бонус
         if clean_msg in full_text_lower:
             score += 10
             
@@ -159,21 +159,20 @@ def find_top_matches(user_message: str, top_n: int = 2) -> str:
 
     scored_items.sort(key=lambda x: x[0], reverse=True)
     
-    # 2. Формируем контекст с ЖЕСТКОЙ ЗАЩИТОЙ ОТ ОШИБКИ 413 (Payload Too Large)
+    # 2. Формируем контекст с ЖЕСТКОЙ ЗАЩИТОЙ ОТ ОШИБКИ 413
     top_matches = []
     current_length = 0
-    MAX_CHARS = 3500 # Жесткий лимит символов (~1000 токенов, что гарантированно меньше лимита в 8000)
+    MAX_CHARS = 3500 # Лимит символов (~1000 токенов, с огромным запасом до 8000)
 
     for score, item in scored_items[:top_n]:
         q = clean_text(str(item.get('question', '')))
         a = clean_text(str(item.get('answer', '')))
         match_text = f"ФАКТ: {q}\nДЕТАЛИ: {a}\n\n"
         
-        # Отсекаем лишний текст, если он превышает безопасный размер
         if current_length + len(match_text) > MAX_CHARS:
             allowed = MAX_CHARS - current_length
             if allowed > 100:
-                top_matches.append(match_text[:allowed] + "... [ТЕКСТ ОБРЕЗАН]")
+                top_matches.append(match_text[:allowed] + "... [ТЕКСТ ОБРЕЗАН ДЛЯ ЭКОНОМИИ ЛИМИТОВ]")
             break
             
         top_matches.append(match_text)
@@ -182,7 +181,6 @@ def find_top_matches(user_message: str, top_n: int = 2) -> str:
     return "".join(top_matches)
 
 def get_groq_answer(user_message: str, is_first_message: bool) -> str:
-    # Ищем текст по принципу Ctrl+F
     retrieved_faq = find_top_matches(user_message, top_n=2)
     
     if not retrieved_faq:
@@ -206,7 +204,6 @@ def get_groq_answer(user_message: str, is_first_message: bool) -> str:
         return "🚨 ОШИБКА: Не задан GROQ_API_KEY в переменных окружения Render."
 
     url = "https://api.groq.com/openai/v1/chat/completions"
-    
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
@@ -245,13 +242,19 @@ def send_message_to_max(target_id: str, text: str):
             pass
 
 def log_to_google_sheet(user_name, user_id, question, answer):
-    if not GOOGLE_SHEET_WEBHOOK:
+    # Проверка на наличие заглушки, чтобы не отправлялись пустые данные в воздух
+    if not GOOGLE_SHEET_WEBHOOK or "AKfycbvH9" in GOOGLE_SHEET_WEBHOOK:
+        print("❌ ОШИБКА: Ссылка на Google Таблицу не задана или стоит ссылка-заглушка!")
         return
+        
     payload = {"name": user_name, "id": user_id, "question": question, "answer": answer}
+    
     try:
-        requests.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=5)
-    except:
-        pass
+        print(f"🔄 Отправка диалога в таблицу (Пользователь: {user_name})...")
+        res = requests.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=15, allow_redirects=True)
+        print(f"✅ Таблица ответила статусом: {res.status_code}")
+    except Exception as e:
+        print(f"🚨 Ошибка отправки в таблицу: {str(e)}")
 
 def transfer_to_operator(user_id: str, user_name: str):
     send_message_to_max(user_id, "⏳ Переключаю вас на специалиста приемной комиссии. Пожалуйста, подождите, скоро вам ответят.")
@@ -307,7 +310,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with Strict Ctrl+F Search & Groq Limit Protection!"}
+    return {"status": "Bot is running with Groq Strict Context Limits & Auto-logging!"}
 
 @app.get("/reload_faq")
 def api_reload_faq():
