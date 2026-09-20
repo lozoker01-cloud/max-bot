@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request, BackgroundTasks
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Жесткая очистка ключа от любых переносов строк и пробелов
+# Жесткая очистка ключей
 raw_groq_key = os.getenv("GROQ_API_KEY", "")
 GROQ_API_KEY = raw_groq_key.replace("\n", "").replace("\r", "").strip()
 
@@ -20,7 +20,7 @@ MAX_API_BASE = "https://platform-api2.max.ru"
 # ВСТАВЬТЕ СЮДА ВАШ ВНУТРЕННИЙ ID
 OPERATOR_ID = "20195632" 
 
-# ВСТАВЬТЕ СЮДА АКТУАЛЬНУЮ ССЫЛКУ ИЗ GOOGLE APPS SCRIPT (БЕЗ СЛЕША НА КОНЦЕ)
+# ВСТАВЬТЕ СЮДА АКТУАЛЬНУЮ ССЫЛКУ ИЗ GOOGLE APPS SCRIPT
 GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbxnWcBZKEyrvlZ0FeiHJobR_DcsU_q5QHjnyH9ImfJ8p76RBeLfkR7CoKxqgF0Dqmpvhg/exec"
 
 app = FastAPI()
@@ -73,7 +73,7 @@ def load_knowledge_base():
             content = f.read()
             paragraphs = [p.strip() for p in content.split('\n\n') if len(p.strip()) > 20]
             for p in paragraphs:
-                faq_items.append({"question": "Официальные правила приема РГСУ", "answer": p})
+                faq_items.append({"question": "Официальные правила", "answer": p})
     except Exception as e:
         print(f"Ошибка TXT: {e}")
 
@@ -88,7 +88,7 @@ def load_knowledge_base():
         except Exception as e:
             print(f"Ошибка связи с Таблицей: {e}")
             
-    print(f"База знаний успешно собрана! Всего правил: {len(faq_items)}")
+    print(f"База знаний успешно собрана! Всего блоков: {len(faq_items)}")
 
 def register_webhook():
     if not MAX_BOT_TOKEN:
@@ -108,7 +108,7 @@ def register_webhook():
     }
     try:
         requests.post(f"{MAX_API_BASE}/subscriptions", headers=headers, json=payload, verify=False, timeout=10)
-    except Exception as e:
+    except:
         pass
 
 @app.on_event("startup")
@@ -120,57 +120,73 @@ def clean_text(text: str) -> str:
     pattern = r"\[" + "c" + "ite:" + r"\s*\d+\]"
     return re.sub(pattern, "", text).strip()
 
-def find_top_matches(user_message: str, top_n: int = 3) -> str:
+def find_top_matches(user_message: str, top_n: int = 2) -> str:
     global faq_items
     if not faq_items:
-        return "База пуста."
+        return ""
 
+    # 1. Выделяем ключевые слова (как при поиске Ctrl+F)
     clean_msg = re.sub(r'[^\w\s]', ' ', user_message.lower())
-    clean_msg = re.sub(r'\s+', ' ', clean_msg).strip()
+    words = clean_msg.split()
+    stop_words = {"что", "такое", "как", "где", "когда", "есть", "ли", "это", "кто", "могу", "мне", "меня", "какие", "у", "в", "на", "с", "по", "для", "можно", "а", "и", "или"}
+    keywords = [w for w in words if len(w) > 2 and w not in stop_words]
     
-    user_words = set(clean_msg.split())
-    stop_words = {"что", "такое", "как", "где", "когда", "есть", "ли", "это", "кто", "могу", "мне", "меня", "какие", "у", "в", "на", "с", "по", "для", "можно"}
-    user_words = {w for w in user_words if len(w) > 2 and w not in stop_words}
-    
-    if not user_words:
-        return "Недостаточно ключевых слов для поиска."
+    if not keywords:
+        return ""
 
     scored_items = []
     for item in faq_items:
         if not isinstance(item, dict):
             continue
         
-        q_text = clean_text(item.get('question', '')).lower()
-        a_text = clean_text(item.get('answer', '')).lower()
-        full_text = q_text + " " + a_text
+        q_text = clean_text(str(item.get('question', ''))).lower()
+        a_text = clean_text(str(item.get('answer', ''))).lower()
+        full_text_lower = q_text + " " + a_text
         
         score = 0
-        for w in user_words:
-            stem = w[:-2] if len(w) >= 6 else (w[:-1] if len(w) == 5 else w)
-            if stem in full_text:
+        for kw in keywords:
+            # Берем корень слова для надежности поиска
+            stem = kw[:-2] if len(kw) >= 5 else kw
+            if stem in full_text_lower:
                 score += 1
         
-        if clean_msg in re.sub(r'[^\w\s]', ' ', full_text):
+        # Полное совпадение фразы дает бонус
+        if clean_msg in full_text_lower:
             score += 10
             
-        scored_items.append((score, item))
+        if score > 0:
+            scored_items.append((score, item))
 
     scored_items.sort(key=lambda x: x[0], reverse=True)
     
+    # 2. Формируем контекст с ЖЕСТКОЙ ЗАЩИТОЙ ОТ ОШИБКИ 413 (Payload Too Large)
     top_matches = []
+    current_length = 0
+    MAX_CHARS = 3500 # Жесткий лимит символов (~1000 токенов, что гарантированно меньше лимита в 8000)
+
     for score, item in scored_items[:top_n]:
-        if score > 0:
-            q = clean_text(item.get('question', ''))
-            a = clean_text(item.get('answer', ''))
-            top_matches.append(f"Контекст: {q}\nТекст: {a}")
+        q = clean_text(str(item.get('question', '')))
+        a = clean_text(str(item.get('answer', '')))
+        match_text = f"ФАКТ: {q}\nДЕТАЛИ: {a}\n\n"
+        
+        # Отсекаем лишний текст, если он превышает безопасный размер
+        if current_length + len(match_text) > MAX_CHARS:
+            allowed = MAX_CHARS - current_length
+            if allowed > 100:
+                top_matches.append(match_text[:allowed] + "... [ТЕКСТ ОБРЕЗАН]")
+            break
+            
+        top_matches.append(match_text)
+        current_length += len(match_text)
 
-    if not top_matches:
-        return "К сожалению, у меня нет точной информации по данному вопросу."
-
-    return "\n\n".join(top_matches)
+    return "".join(top_matches)
 
 def get_groq_answer(user_message: str, is_first_message: bool) -> str:
-    retrieved_faq = find_top_matches(user_message, top_n=3)
+    # Ищем текст по принципу Ctrl+F
+    retrieved_faq = find_top_matches(user_message, top_n=2)
+    
+    if not retrieved_faq:
+        return "К сожалению, у меня нет точной информации по данному вопросу."
     
     if is_first_message:
         greeting_rule = "1. БУДЬ ЧЕЛОВЕКОМ: Начни ответ вежливо (например, «Здравствуйте!», «Добрый день!»)."
@@ -178,13 +194,12 @@ def get_groq_answer(user_message: str, is_first_message: bool) -> str:
         greeting_rule = "1. БУДЬ ЧЕЛОВЕКОМ: Отвечай сразу по делу. НЕ ЗДОРОВАЙСЯ, так как диалог уже идет."
 
     system_prompt = (
-        "Ты — дружелюбный, официальный и компетентный консультант приемной комиссии РГСУ.\n"
-        "Твоя задача — отвечать на вопросы абитуриентов, используя ТОЛЬКО предоставленную Базу Знаний.\n\n"
+        "Ты — дружелюбный и компетентный консультант приемной комиссии РГСУ.\n"
         "ПРАВИЛА ОТВЕТА (ОЧЕНЬ ВАЖНО):\n"
-        f"{greeting_rule} Формулируй ответ полными, красивыми предложениями.\n"
-        "2. ОПИРАЙСЯ ТОЛЬКО НА БАЗУ: Вся информация в твоем ответе должна быть взята ИЗ СТРОК НИЖЕ.\n"
-        "3. ОТСУТСТВИЕ ИНФОРМАЦИИ: Если в Базе Знаний нет ответа, отвечай ТОЧНО этой фразой: «К сожалению, у меня нет точной информации по данному вопросу.»\n\n"
-        f"=== БАЗА ЗНАНИЙ ===\n{retrieved_faq}"
+        f"{greeting_rule}\n"
+        "2. Отвечай на вопрос, используя ТОЛЬКО предоставленные факты из Базы Знаний.\n"
+        "3. Перефразируй факты так, чтобы текст звучал красиво и понятно для абитуриента.\n\n"
+        f"=== БАЗА ЗНАНИЙ (CTRL+F) ===\n{retrieved_faq}"
     )
       
     if not GROQ_API_KEY:
@@ -197,12 +212,12 @@ def get_groq_answer(user_message: str, is_first_message: bool) -> str:
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "openai/gpt-oss-20b",
+        "model": "openai/gpt-oss-120b",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
         ],
-        "temperature": 0.2,
+        "temperature": 0.1,
         "max_tokens": 500
     }
     
@@ -292,7 +307,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with Groq (gpt-oss-20b) & Clean Keys!"}
+    return {"status": "Bot is running with Strict Ctrl+F Search & Groq Limit Protection!"}
 
 @app.get("/reload_faq")
 def api_reload_faq():
