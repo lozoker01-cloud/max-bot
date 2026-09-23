@@ -9,7 +9,6 @@ from fastapi import FastAPI, Request, BackgroundTasks
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Жесткая очистка ключей
 raw_groq_key = os.getenv("GROQ_API_KEY", "")
 GROQ_API_KEY = raw_groq_key.replace("\n", "").replace("\r", "").strip()
 
@@ -65,8 +64,10 @@ def get_embeddings_batch(texts: list) -> list:
         res = requests.post(url, headers=headers, json=payload, timeout=20)
         if res.status_code == 200:
             return [item["embedding"] for item in res.json().get("data", [])]
+        else:
+            print(f"🚨 Ошибка Groq Embeddings: {res.text}")
     except Exception as e:
-        print("Ошибка векторизации:", e)
+        print("🚨 Ошибка сети при векторизации:", e)
     return []
 
 def load_knowledge_base():
@@ -76,38 +77,67 @@ def load_knowledge_base():
     print("Загрузка 1/3: faq_data.json...")
     try:
         with open('faq_data.json', 'r', encoding='utf-8') as f:
-            faq_items.extend(flatten_faq(json.load(f)))
-    except: pass
+            loaded_json = flatten_faq(json.load(f))
+            faq_items.extend(loaded_json)
+            print(f"   => Загружено из JSON: {len(loaded_json)} блоков.")
+    except Exception as e: 
+        print(f"   => Ошибка JSON: {e}")
 
     print("Загрузка 2/3: pravila.txt...")
     try:
         with open('pravila.txt', 'r', encoding='utf-8') as f:
-            for p in [p.strip() for p in f.read().split('\n\n') if len(p.strip()) > 20]:
-                faq_items.append({"question": "Официальные правила", "answer": p})
-    except: pass
+            content = f.read()
+            # Пытаемся разбить по двойному переносу
+            paragraphs = [p.strip() for p in content.split('\n\n') if len(p.strip()) > 20]
+            # Если двойных переносов нет, бьем по одинарному
+            if not paragraphs:
+                paragraphs = [p.strip() for p in content.split('\n') if len(p.strip()) > 20]
+                
+            # ЖЕСТКАЯ НАРЕЗКА: Если абзац все равно гигантский, режем его на куски по 1500 символов
+            safe_paragraphs = []
+            for p in paragraphs:
+                if len(p) > 1500:
+                    for i in range(0, len(p), 1500):
+                        safe_paragraphs.append(p[i:i+1500])
+                else:
+                    safe_paragraphs.append(p)
+
+            for p in safe_paragraphs:
+                faq_items.append({"question": "Официальные правила РГСУ", "answer": p})
+            
+            print(f"   => Загружено из TXT: {len(safe_paragraphs)} блоков.")
+    except Exception as e: 
+        print(f"   => Ошибка TXT: {e}")
 
     print("Загрузка 3/3: Google Таблицы...")
     if GOOGLE_SHEET_WEBHOOK and "AKfycbvH9" not in GOOGLE_SHEET_WEBHOOK:
         try:
             res = requests.get(GOOGLE_SHEET_WEBHOOK, timeout=10)
             if res.status_code == 200:
-                for item in res.json():
+                sheet_data = res.json()
+                for item in sheet_data:
                     faq_items.append({"question": item.get("question", ""), "answer": item.get("answer", "")})
-        except: pass
+                print(f"   => Загружено из Таблицы: {len(sheet_data)} блоков.")
+        except Exception as e: 
+            print(f"   => Ошибка Таблицы: {e}")
             
     print(f"База загружена! Создаем векторы (Embeddings) для {len(faq_items)} блоков...")
     
-    # Пакетная векторизация базы знаний (по 50 блоков за раз)
-    batch_size = 50
+    # Пакетная векторизация (снизили до 10 штук за раз, чтобы не ловить лимиты бесплатного тарифа)
+    batch_size = 10
+    successful_embeddings = 0
+    
     for i in range(0, len(faq_items), batch_size):
         batch = faq_items[i:i+batch_size]
         texts_to_embed = [f"Вопрос: {item.get('question','')} Ответ: {item.get('answer','')}" for item in batch]
+        
         embeddings = get_embeddings_batch(texts_to_embed)
         if embeddings and len(embeddings) == len(batch):
             for j, emb in enumerate(embeddings):
                 batch[j]['embedding'] = emb
+                successful_embeddings += 1
                 
-    print("✅ Векторная база знаний готова!")
+    print(f"✅ Векторная база готова! Успешно векторизовано: {successful_embeddings}/{len(faq_items)}")
 
 def register_webhook():
     if not MAX_BOT_TOKEN: return
@@ -128,7 +158,6 @@ def clean_text(text: str) -> str:
     return re.sub(r"\[" + "c" + "ite:" + r"\s*\d+\]", "", str(text)).strip()
 
 def cosine_similarity(v1, v2):
-    """Вычисляет семантическую близость между двумя текстами"""
     if not v1 or not v2: return 0.0
     dot_product = sum(a * b for a, b in zip(v1, v2))
     norm_v1 = math.sqrt(sum(a * a for a in v1))
@@ -140,21 +169,17 @@ def find_top_matches(search_query: str, top_n: int = 2) -> str:
     global faq_items
     if not faq_items: return ""
 
-    # Переводим запрос абитуриента в вектор
     query_vectors = get_embeddings_batch([search_query])
     query_emb = query_vectors[0] if query_vectors else None
 
     scored_items = []
     
-    # Гибридный поиск: Векторный (основной) + Текстовый (запасной)
     for item in faq_items:
         score = 0
         if query_emb and 'embedding' in item:
-            # 1. СМАРТ ПОИСК: Вычисляем смысловую близость
             score = cosine_similarity(query_emb, item['embedding'])
-            score = score * 100 # Для удобства шкалы
+            score = score * 100 
         else:
-            # 2. ЗАПАСНОЙ ПОИСК: Если сервер эмбеддингов недоступен
             clean_msg = re.sub(r'[^\w\s]', ' ', search_query.lower())
             words = clean_msg.split()
             stop_words = {"что", "такое", "как", "где", "когда", "есть", "ли", "это", "кто", "могу", "мне", "меня"}
@@ -164,7 +189,7 @@ def find_top_matches(search_query: str, top_n: int = 2) -> str:
                 if (kw[:-2] if len(kw) >= 5 else kw) in full_text: score += 1
             if clean_msg in full_text: score += 10
             
-        # Отсекаем мусор (если близость ниже 30%)
+        # Порог срабатывания векторного поиска (30%)
         if score > 30 or (not query_emb and score > 0):
             scored_items.append((score, item))
 
@@ -191,7 +216,6 @@ def get_groq_answer(chat_id: str, user_message: str) -> str:
     
     history = user_sessions[chat_id]
 
-    # Склеиваем вопрос с историей для умного поиска
     search_query = user_message
     if len(history) >= 2 and len(user_message.split()) <= 5:
         search_query = f"{history[-2]['content']} {user_message}"
@@ -238,13 +262,9 @@ def get_groq_answer(chat_id: str, user_message: str) -> str:
     except Exception as e:
         return f"🚨 ОШИБКА ЗАПРОСА: {str(e)}"
 
-# ИСПРАВЛЕННАЯ ФУНКЦИЯ: Бот теперь правильно определяет личные сообщения (user_id) и чаты (chat_id)
 def send_message_to_max(target_id: str, text: str):
     if not MAX_BOT_TOKEN or not target_id: return
     headers = {"Authorization": f"{MAX_BOT_TOKEN}", "Content-Type": "application/json"}
-    
-    # МАКС использует разные параметры для личных сообщений (user_id) и групп (chat_id). 
-    # Перебираем оба варианта, чтобы 100% доставить сообщение.
     for id_param in ["user_id", "chat_id"]:
         try:
             res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params={id_param: target_id}, json={id_param: target_id, "text": text}, verify=False, timeout=5)
@@ -279,7 +299,6 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         send_message_to_max(chat_id, f"✅ Ваш внутренний ID:\n{chat_id}")
         return
 
-    # ОТЛОВ РАЗГОВОРНЫХ ФРАЗ БЕЗ ЗАПРОСА В БАЗУ И НЕЙРОСЕТЬ
     clean_text_lower = re.sub(r'[^\w\s]', '', text.lower()).strip()
     if clean_text_lower in ["спасибо", "спс", "благодарю", "понял", "ок", "хорошо", "ясно", "понятно", "супер", "отлично"]:
         send_message_to_max(chat_id, "Рад был помочь! Если появятся еще вопросы — обращайтесь. Удачи с поступлением!")
@@ -310,7 +329,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with Semantic Vector Search (Embeddings) & Memory!"}
+    return {"status": "Bot is running with Chunked Vector Search & Memory!"}
 
 @app.get("/reload_faq")
 def api_reload_faq():
