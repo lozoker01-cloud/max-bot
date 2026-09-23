@@ -17,7 +17,7 @@ MAX_BOT_TOKEN = raw_max_token.replace("\n", "").replace("\r", "").strip()
 MAX_API_BASE = "https://platform-api2.max.ru"
 
 # СПИСОК ID ОПЕРАТОРОВ
-OPERATOR_IDS = ["20195632", "ВТОРОЙ_ID_СЮДА"] 
+OPERATOR_IDS = ["20195632", "332287012"] 
 
 # ССЫЛКА НА GOOGLE APPS SCRIPT
 GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbzg8uTKzlKJkMY1MeRsg_FFYuv2LTHwuwdp5tlFNh4yn2y_pBzG-kzWDLANRwuQKv-dFQ/exec"
