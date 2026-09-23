@@ -59,7 +59,7 @@ def get_embeddings_batch(texts: list) -> list:
     if not GROQ_API_KEY or not texts: return []
     url = "https://api.groq.com/openai/v1/embeddings"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    payload = {"input": texts, "model": "nomic-embed-text-v1_5"}
+    payload = {"input": texts, "model": "nomic-embed-text-v1.5"}
     try:
         res = requests.post(url, headers=headers, json=payload, timeout=20)
         if res.status_code == 200:
