@@ -16,19 +16,17 @@ MAX_BOT_TOKEN = raw_max_token.replace("\n", "").replace("\r", "").strip()
 
 MAX_API_BASE = "https://platform-api2.max.ru"
 
-# =====================================================================
-# 👥 СПИСОК ID ОПЕРАТОРОВ (уведомления будут приходить им всем)
-# =====================================================================
-OPERATOR_IDS = ["20195632", "332287012"] 
+# СПИСОК ID ОПЕРАТОРОВ
+OPERATOR_IDS = ["20195632", "ВТОРОЙ_ID_СЮДА"] 
 
-# =====================================================================
-# 🛑 ВСТАВЬТЕ СЮДА ВАШУ АКТУАЛЬНУЮ ССЫЛКУ ИЗ GOOGLE APPS SCRIPT
-# =====================================================================
+# ССЫЛКА НА GOOGLE APPS SCRIPT
 GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbzg8uTKzlKJkMY1MeRsg_FFYuv2LTHwuwdp5tlFNh4yn2y_pBzG-kzWDLANRwuQKv-dFQ/exec"
 
 app = FastAPI()
 
 user_sessions = {}
+active_tickets = {}       # Активные тикеты: {user_id: {"name": name, "history": [...]}}
+operator_target = {}      # Личный фокус оператора: {op_id: user_id} (У каждого свой!)
 faq_items = []
 
 def flatten_faq(data):
@@ -71,9 +69,8 @@ def load_knowledge_base():
                         "question": str(item.get("question", "Общий вопрос")),
                         "answer": str(item.get("answer", ""))
                     })
-            print(f"   => Загружено из JSON: {len(loaded_json)} блоков.")
     except Exception as e: 
-        print(f"   => Ошибка JSON: {e}")
+        print(f"Ошибка JSON: {e}")
 
     print("Загрузка 2/3: pravila.txt...")
     try:
@@ -89,28 +86,24 @@ def load_knowledge_base():
                     "question": f"Правила РГСУ: {first_words}...",
                     "answer": p
                 })
-            
-            print(f"   => Загружено из TXT: {len(paragraphs)} блоков.")
     except Exception as e: 
-        print(f"   => Ошибка TXT: {e}")
+        print(f"Ошибка TXT: {e}")
 
     print("Загрузка 3/3: Google Таблицы...")
     if GOOGLE_SHEET_WEBHOOK and "AKfycbvH9" not in GOOGLE_SHEET_WEBHOOK:
         try:
             res = requests.get(GOOGLE_SHEET_WEBHOOK, timeout=10)
             if res.status_code == 200:
-                sheet_data = res.json()
-                for item in sheet_data:
+                for item in res.json():
                     if item.get("answer"):
                         faq_items.append({
                             "question": str(item.get("question", "")),
                             "answer": str(item.get("answer", ""))
                         })
-                print(f"   => Загружено из Таблицы: {len(sheet_data)} блоков.")
         except Exception as e: 
-            print(f"   => Ошибка Таблицы: {e}")
+            print(f"Ошибка Таблицы: {e}")
             
-    print(f"✅ База знаний успешно загружена! Всего блоков в памяти: {len(faq_items)}")
+    print(f"✅ База загружена! Блоков в памяти: {len(faq_items)}")
 
 def register_webhook():
     if not MAX_BOT_TOKEN: return
@@ -150,16 +143,11 @@ def find_top_matches(search_query: str, top_n: int = 3) -> str:
         score = 0
         for kw in keywords:
             stem = kw[:-2] if len(kw) >= 5 else kw
-            if stem in q_text:
-                score += 3
-            elif stem in a_text:
-                score += 1
+            if stem in q_text: score += 3
+            elif stem in a_text: score += 1
                 
-        if clean_msg.strip() in full_text:
-            score += 20
-            
-        if score > 0:
-            scored_items.append((score, item))
+        if clean_msg.strip() in full_text: score += 20
+        if score > 0: scored_items.append((score, item))
 
     scored_items.sort(key=lambda x: x[0], reverse=True)
     
@@ -182,9 +170,7 @@ def find_top_matches(search_query: str, top_n: int = 3) -> str:
     return "".join(top_matches)
 
 def get_groq_answer(chat_id: str, user_message: str) -> str:
-    if chat_id not in user_sessions:
-        user_sessions[chat_id] = []
-    
+    if chat_id not in user_sessions: user_sessions[chat_id] = []
     history = user_sessions[chat_id]
 
     search_query = user_message
@@ -192,28 +178,25 @@ def get_groq_answer(chat_id: str, user_message: str) -> str:
         search_query = f"{history[-2]['content']} {user_message}"
         
     retrieved_faq = find_top_matches(search_query, top_n=3)
-    
     if not retrieved_faq:
         return "К сожалению, в базе знаний нет точной информации по данному вопросу. Напишите «Оператор», и я переведу вас на специалиста."
     
     greeting = "1. БЕЗ ПРИВЕТСТВИЙ: Диалог уже идет, отвечай сразу по делу."
-    if not history:
-        greeting = "1. ПОЗДОРОВАЙСЯ: Это первый вопрос, начни вежливо."
+    if not history: greeting = "1. ПОЗДОРОВАЙСЯ: Это первый вопрос, начни вежливо."
 
     system_prompt = (
         "Ты — дружелюбный и компетентный консультант приемной комиссии РГСУ.\n"
         "ПРАВИЛА ОТВЕТА:\n"
         f"{greeting}\n"
         "2. УЧИТЫВАЙ КОНТЕКСТ: Анализируй предыдущие сообщения диалога.\n"
-        "3. БАЗА ЗНАНИЙ: Отвечай ТОЛЬКО опираясь на факты ниже. Не придумывай от себя.\n\n"
+        "3. БАЗА ЗНАНИЙ: Отвечай ТОЛЬКО опираясь на факты ниже.\n\n"
         f"=== ФАКТЫ ИЗ БАЗЫ ЗНАНИЙ ===\n{retrieved_faq}"
     )
       
     if not GROQ_API_KEY: return "🚨 ОШИБКА: Не задан GROQ_API_KEY."
 
     messages_for_api = [{"role": "system", "content": system_prompt}]
-    for msg in history[-4:]:
-        messages_for_api.append(msg)
+    for msg in history[-4:]: messages_for_api.append(msg)
     messages_for_api.append({"role": "user", "content": user_message})
 
     try:
@@ -226,7 +209,7 @@ def get_groq_answer(chat_id: str, user_message: str) -> str:
             answer = data["choices"][0]["message"]["content"]
             history.append({"role": "user", "content": user_message})
             history.append({"role": "assistant", "content": answer})
-            if len(history) > 6: user_sessions[chat_id] = history[-6:]
+            if len(history) > 8: user_sessions[chat_id] = history[-8:]
             return answer
         else:
             return f"🚨 ОШИБКА GROQ: {data.get('error', {}).get('message', str(data))}"
@@ -239,8 +222,7 @@ def send_message_to_max(target_id: str, text: str):
     for id_param in ["user_id", "chat_id"]:
         try:
             res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params={id_param: target_id}, json={id_param: target_id, "text": text}, verify=False, timeout=5)
-            if res.status_code == 200:
-                break
+            if res.status_code == 200: break
         except: pass
 
 def log_to_google_sheet(user_name, user_id, question, answer):
@@ -250,35 +232,118 @@ def log_to_google_sheet(user_name, user_id, question, answer):
     except: pass
 
 def transfer_to_operator(user_id: str, user_name: str):
-    send_message_to_max(user_id, "⏳ Переключаю вас на специалиста приемной комиссии. Пожалуйста, подождите, скоро вам ответят.")
+    active_tickets[user_id] = {
+        "name": user_name,
+        "history": user_sessions.get(user_id, [])
+    }
+
+    send_message_to_max(user_id, f"⏳ {user_name}, переключаю вас на специалиста приемной комиссии. Ожидайте ответа.")
     
-    last_q, last_a = "Неизвестно", "Нет ответа"
-    if user_id in user_sessions and len(user_sessions[user_id]) >= 2:
-        last_q = user_sessions[user_id][-2]["content"]
-        last_a = user_sessions[user_id][-1]["content"]
-        
-    alert_text = (f"🚨 ЗАПРОС ОПЕРАТОРА\n\n👤 Имя: {user_name}\n🆔 ID: {user_id}\n\n❓ Вопрос:\n{last_q}\n\n🤖 Ответ бота:\n{last_a}\n\n👇 Для ответа скопируйте:\n\n/ответ {user_id} ")
+    history = user_sessions.get(user_id, [])
+    transcript = ""
+    if history:
+        for msg in history:
+            role_label = f"👤 {user_name}" if msg["role"] == "user" else "🤖 Бот"
+            transcript += f"{role_label}: {msg['content']}\n"
+    else:
+        transcript = "История пуста."
+
+    alert_text = (
+        f"🚨 НОВЫЙ ТИКЕТ ОТ АБИТУРИЕНТА!\n\n"
+        f"👤 Имя: *{user_name}*\n"
+        f"🆔 ID: `{user_id}`\n\n"
+        f"📜 ИСТОРИЯ ДИАЛОГА:\n----------------------------------\n"
+        f"{transcript}"
+        f"----------------------------------\n"
+        f"💬 Чтобы взять этот диалог и отвечать абитуриенту, отправьте команду:\n"
+        f"`/о {user_id}` (или `/клиенты` для списка)\n\n"
+        f"🔒 Чтобы закрыть тикет: `/закрыть {user_id}`"
+    )
     
-    # Рассылаем уведомление ВСЕМ операторам из списка
+    # Рассылаем уведомление обоим операторам, но НЕ трогаем их текущий фокус
     for op_id in OPERATOR_IDS:
         if op_id and op_id != "ВТОРОЙ_ID_СЮДА":
             send_message_to_max(str(op_id), alert_text)
 
 def process_user_message(chat_id: str, text: str, user_name: str):
-    # Проверяем, написал ли один из операторов команду /ответ
-    if str(chat_id) in [str(op) for op in OPERATOR_IDS] and text.lower().startswith("/ответ"):
-        parts = text.split(" ", 2)
-        if len(parts) >= 3:
-            target_user = parts[1]
-            operator_reply = parts[2]
-            send_message_to_max(target_user, f"👨‍💻 *Сообщение от специалиста приемной комиссии:*\n\n{operator_reply}")
-            send_message_to_max(chat_id, f"✅ Ответ успешно отправлен пользователю {target_user}!")
+    # 1. ОБРАБОТКА СООБЩЕНИЙ ОТ ОПЕРАТОРОВ
+    if str(chat_id) in [str(op) for op in OPERATOR_IDS]:
+        text_lower = text.lower()
+        
+        # Список всех клиентов
+        if text_lower.startswith("/клиенты") or text_lower.startswith("/list"):
+            if not active_tickets:
+                send_message_to_max(chat_id, "📭 Сейчас нет активных обращений от абитуриентов.")
+                return
+            
+            current_target = operator_target.get(str(chat_id))
+            list_msg = "📋 *Активные обращения абитуриентов:*\n\n"
+            
+            for u_id, info in active_tickets.items():
+                active_mark = " 👉 [ВАШ СОБЕСЕДНИК]" if u_id == current_target else ""
+                list_msg += f"👤 *{info['name']}* (ID: `{u_id}`){active_mark}\n"
+                
+            list_msg += "\nДля выбора клиента отправьте:\n`/о [ID]` (например: `/о 123456`)"
+            send_message_to_max(chat_id, list_msg)
+            return
+
+        # Закрепить за собой клиента через /о [ID]
+        elif text_lower.startswith("/о ") or text_lower.startswith("/select ") or text_lower.startswith("/переключить "):
+            parts = text.split(" ", 1)
+            if len(parts) >= 2:
+                target_user = parts[1].strip()
+                if target_user in active_tickets:
+                    operator_target[str(chat_id)] = target_user
+                    client_name = active_tickets[target_user]["name"]
+                    send_message_to_max(chat_id, f"✅ Вы закрепили за собой абитуриента: *{client_name}* (ID: `{target_user}`). Теперь все ваши сообщения будут уходить только ему!")
+                else:
+                    send_message_to_max(chat_id, f"❌ Абитуриент с ID `{target_user}` не найден в активных тикетах.")
+            else:
+                send_message_to_max(chat_id, "❌ Укажите ID. Пример:\n`/о 20195632`")
+            return
+
+        # Закрыть тикет
+        elif text_lower.startswith("/закрыть") or text_lower.startswith("/close"):
+            parts = text.split(" ", 1)
+            target_user = parts[1].strip() if len(parts) >= 2 else operator_target.get(str(chat_id))
+            
+            if target_user and target_user in active_tickets:
+                name = active_tickets[target_user]["name"]
+                del active_tickets[target_user]
+                if operator_target.get(str(chat_id)) == target_user:
+                    operator_target.pop(str(chat_id), None)
+                    
+                send_message_to_max(target_user, "✅ Ваш диалог с приемной комиссией завершен. Бот снова к вашим услугам!")
+                send_message_to_max(chat_id, f"🔒 Тикет с абитуриентом *{name}* (ID: {target_user}) закрыт.")
+            else:
+                send_message_to_max(chat_id, "❌ Укажите ID тикета для закрытия. Пример:\n`/закрыть [ID]`")
+            return
+
+        # 💬 САМОЕ ГЛАВНОЕ: ОПЕРАТОР ПИШЕТ ОБЫЧНЫЙ ТЕКСТ
         else:
-            send_message_to_max(chat_id, "❌ Ошибка формата. Напишите так:\n/ответ [ID] [текст]")
-        return
+            target_user = operator_target.get(str(chat_id))
+            if not target_user or target_user not in active_tickets:
+                send_message_to_max(chat_id, "⚠️ У вас не выбран активный клиент! Отправьте `/клиенты`, чтобы посмотреть список, или `/о [ID]`, чтобы начать диалог.")
+                return
+            
+            # Отправка сообщения строго выбранному клиенту данного оператора
+            client_name = active_tickets[target_user]["name"]
+            send_message_to_max(target_user, f"👨‍💻 *Специалист приемной комиссии:*\n\n{text}")
+            send_message_to_max(chat_id, f"↗️ [Вам ➔ {client_name}]: {text}")
+            return
 
     if text.strip().lower() == "/myid":
         send_message_to_max(chat_id, f"✅ Ваш внутренний ID:\n{chat_id}")
+        return
+
+    # 2. РЕЖИМ ЖИВОГО ДИАЛОГА ДЛЯ АБИТУРИЕНТА
+    if chat_id in active_tickets:
+        client_name = active_tickets[chat_id]["name"]
+        live_alert = f"💬 *Сообщение от {client_name}* (ID: `{chat_id}`):\n\n{text}\n\n*(Чтобы ответить ему, закрепите его командой `/о {chat_id}`)*"
+        
+        for op_id in OPERATOR_IDS:
+            if op_id and op_id != "ВТОРОЙ_ID_СЮДА":
+                send_message_to_max(str(op_id), live_alert)
         return
 
     clean_text_lower = re.sub(r'[^\w\s]', '', text.lower()).strip()
@@ -290,12 +355,14 @@ def process_user_message(chat_id: str, text: str, user_name: str):
     if text.lower() in ["/start", "старт"]:
         send_message_to_max(chat_id, "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, и я постараюсь помочь!")
         user_sessions[chat_id] = []
+        if chat_id in active_tickets: del active_tickets[chat_id]
         return
         
     if "оператор" in text.lower():
         transfer_to_operator(chat_id, user_name)
         return
 
+    # 3. Обычный режим работы бота (Groq)
     bot_reply = get_groq_answer(chat_id, text)
     
     if "🚨 ОШИБКА" not in bot_reply:
@@ -311,7 +378,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with Multi-Operator Support!"}
+    return {"status": "Bot is running with Independent Multi-Operator Helpdesk Sessions!"}
 
 @app.get("/reload_faq")
 def api_reload_faq():
