@@ -238,12 +238,19 @@ def get_groq_answer(chat_id: str, user_message: str) -> str:
     except Exception as e:
         return f"🚨 ОШИБКА ЗАПРОСА: {str(e)}"
 
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ: Бот теперь правильно определяет личные сообщения (user_id) и чаты (chat_id)
 def send_message_to_max(target_id: str, text: str):
     if not MAX_BOT_TOKEN or not target_id: return
-    try:
-        requests.post(f"{MAX_API_BASE}/messages", headers={"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}, 
-                      params={"chat_id": target_id}, json={"chat_id": target_id, "text": text}, verify=False, timeout=5)
-    except: pass
+    headers = {"Authorization": f"{MAX_BOT_TOKEN}", "Content-Type": "application/json"}
+    
+    # МАКС использует разные параметры для личных сообщений (user_id) и групп (chat_id). 
+    # Перебираем оба варианта, чтобы 100% доставить сообщение.
+    for id_param in ["user_id", "chat_id"]:
+        try:
+            res = requests.post(f"{MAX_API_BASE}/messages", headers=headers, params={id_param: target_id}, json={id_param: target_id, "text": text}, verify=False, timeout=5)
+            if res.status_code == 200:
+                break
+        except: pass
 
 def log_to_google_sheet(user_name, user_id, question, answer):
     if not GOOGLE_SHEET_WEBHOOK or "AKfycbvH9" in GOOGLE_SHEET_WEBHOOK: return
@@ -331,3 +338,5 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
             background_tasks.add_task(process_user_message, str(chat_id), text, str(user_name))
     except: pass
     return {"status": "ok"}
+
+
