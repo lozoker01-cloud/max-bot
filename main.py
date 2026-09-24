@@ -18,7 +18,9 @@ MAX_BOT_TOKEN = raw_max_token.replace("\n", "").replace("\r", "").strip()
 
 MAX_API_BASE = "https://platform-api2.max.ru"
 
-# СПИСОК ID ОПЕРАТОРОВ (для уведомлений о новых тикетах)
+# =====================================================================
+# 👥 СПИСОК ID ОПЕРАТОРОВ (через запятую, если их несколько)
+# =====================================================================
 OPERATOR_IDS = ["20195632", "332287012"] 
 
 # =====================================================================
@@ -30,9 +32,9 @@ app = FastAPI()
 
 user_sessions = {}
 active_tickets = {}       
+operator_target = {}
 faq_items = []
 
-# Модель для приема сообщений из Web-панели
 class ReplyData(BaseModel):
     user_id: str
     text: str
@@ -64,7 +66,6 @@ HTML_PANEL = """
         #chat-header h3 { margin: 0; color: #111b21; font-size: 16px; }
         .close-btn { background: #ff3b30; color: #fff; border: none; padding: 8px 12px; border-radius: 6px; font-weight: bold; cursor: pointer; }
         
-        /* Фон в стиле WhatsApp */
         #chat-window { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-color: #e5ddd5; }
         
         .msg { max-width: 75%; padding: 8px 12px; border-radius: 8px; font-size: 14px; line-height: 1.4; box-shadow: 0 1px 0.5px rgba(11,20,26,.13); position: relative; }
@@ -141,7 +142,6 @@ HTML_PANEL = """
                             div.className = 'msg user';
                             div.innerText = msg.content;
                         } else {
-                            // Отличаем сообщения бота от сообщений живого оператора
                             if (msg.content.includes('👨‍💻 Оператор:')) {
                                 div.className = 'msg operator';
                                 div.innerText = msg.content.replace('👨‍💻 Оператор: ', '');
@@ -159,7 +159,7 @@ HTML_PANEL = """
 
         function selectTicket(id, name) {
             currentUserId = id;
-            lastMsgCount = 0; // Сбрасываем счетчик для перерисовки
+            lastMsgCount = 0;
             document.getElementById('current-name').innerText = name;
             document.getElementById('no-chat-overlay').style.display = 'none';
             fetchTickets();
@@ -172,7 +172,6 @@ HTML_PANEL = """
             if (!text || !currentUserId) return;
             inp.value = '';
             
-            // Мгновенно показываем сообщение у оператора (до ответа сервера)
             const chat = document.getElementById('chat-window');
             const div = document.createElement('div');
             div.className = 'msg operator';
@@ -199,7 +198,6 @@ HTML_PANEL = """
             fetchTickets();
         }
 
-        // Обновляем списки и чат каждые 2-3 секунды
         setInterval(fetchTickets, 3000);
         setInterval(fetchChat, 2000);
         fetchTickets();
@@ -214,8 +212,7 @@ HTML_PANEL = """
 
 @app.get("/", response_class=HTMLResponse)
 def root():
-    # При нажатии на "Квадратики" отдаем красивую Web-панель!
-    return HTML_PANEL
+    return HTMLResponse(content=HTML_PANEL)
 
 @app.get("/api/tickets")
 def api_get_tickets():
@@ -227,10 +224,8 @@ def api_get_chat(user_id: str):
 
 @app.post("/api/reply")
 def api_reply(data: ReplyData):
-    # Оператор написал из Web-панели -> отправляем в МАКС
     send_message_to_max(data.user_id, f"👨‍💻 *Специалист приемной комиссии:*\n\n{data.text}")
     if data.user_id in user_sessions:
-        # Сохраняем в историю со спец. меткой, чтобы отрисовать синим цветом в Web-панели
         user_sessions[data.user_id].append({"role": "assistant", "content": f"👨‍💻 Оператор: {data.text}"})
     return {"status": "ok"}
 
@@ -274,31 +269,52 @@ def flatten_faq(data):
 def load_knowledge_base():
     global faq_items
     faq_items = []
+    
+    print("Загрузка 1/3: faq_data.json...")
     try:
         with open('faq_data.json', 'r', encoding='utf-8') as f:
-            for item in flatten_faq(json.load(f)):
+            loaded_json = flatten_faq(json.load(f))
+            for item in loaded_json:
                 if isinstance(item, dict) and item.get("answer"):
-                    faq_items.append({"question": str(item.get("question", "Общий вопрос")), "answer": str(item.get("answer", ""))})
-    except: pass
+                    faq_items.append({
+                        "question": str(item.get("question", "Общий вопрос")),
+                        "answer": str(item.get("answer", ""))
+                    })
+    except Exception as e: 
+        print(f"Ошибка JSON: {e}")
 
+    print("Загрузка 2/3: pravila.txt...")
     try:
         with open('pravila.txt', 'r', encoding='utf-8') as f:
             content = f.read()
             paragraphs = [p.strip() for p in content.split('\n\n') if len(p.strip()) > 20]
             if not paragraphs:
                 paragraphs = [p.strip() for p in content.split('\n') if len(p.strip()) > 20]
+                
             for p in paragraphs:
-                faq_items.append({"question": f"Правила РГСУ: {' '.join(p.split()[:6])}...", "answer": p})
-    except: pass
+                first_words = " ".join(p.split()[:6])
+                faq_items.append({
+                    "question": f"Правила РГСУ: {first_words}...",
+                    "answer": p
+                })
+    except Exception as e: 
+        print(f"Ошибка TXT: {e}")
 
+    print("Загрузка 3/3: Google Таблицы...")
     if GOOGLE_SHEET_WEBHOOK and "AKfycbvH9" not in GOOGLE_SHEET_WEBHOOK:
         try:
             res = requests.get(GOOGLE_SHEET_WEBHOOK, timeout=10)
             if res.status_code == 200:
                 for item in res.json():
                     if item.get("answer"):
-                        faq_items.append({"question": str(item.get("question", "")), "answer": str(item.get("answer", ""))})
-        except: pass
+                        faq_items.append({
+                            "question": str(item.get("question", "")),
+                            "answer": str(item.get("answer", ""))
+                        })
+        except Exception as e: 
+            print(f"Ошибка Таблицы: {e}")
+            
+    print(f"✅ База загружена! Блоков в памяти: {len(faq_items)}")
 
 def register_webhook():
     if not MAX_BOT_TOKEN: return
@@ -321,6 +337,7 @@ def clean_text(text: str) -> str:
 def find_top_matches(search_query: str, top_n: int = 3) -> str:
     global faq_items
     if not faq_items: return ""
+
     clean_msg = re.sub(r'[^\w\s]', ' ', search_query.lower())
     words = clean_msg.split()
     stop_words = {"что", "такое", "как", "где", "когда", "есть", "ли", "это", "кто", "могу", "мне", "меня", "а", "и", "или", "в", "на", "с", "по", "для"}
@@ -329,28 +346,38 @@ def find_top_matches(search_query: str, top_n: int = 3) -> str:
     scored_items = []
     for item in faq_items:
         if not isinstance(item, dict): continue
+        
         q_text = clean_text(str(item.get('question', ''))).lower()
         a_text = clean_text(str(item.get('answer', ''))).lower()
         full_text = q_text + " " + a_text
+        
         score = 0
         for kw in keywords:
             stem = kw[:-2] if len(kw) >= 5 else kw
             if stem in q_text: score += 3
             elif stem in a_text: score += 1
+                
         if clean_msg.strip() in full_text: score += 20
         if score > 0: scored_items.append((score, item))
 
     scored_items.sort(key=lambda x: x[0], reverse=True)
+    
     top_matches = []
     current_length = 0
+    MAX_CHARS = 3500
+
     for score, item in scored_items[:top_n]:
-        match_text = f"ФАКТ: {clean_text(str(item.get('question', '')))}\nДЕТАЛИ: {clean_text(str(item.get('answer', '')))}\n\n"
-        if current_length + len(match_text) > 3500:
-            allowed = 3500 - current_length
+        q = clean_text(str(item.get('question', '')))
+        a = clean_text(str(item.get('answer', '')))
+        match_text = f"ФАКТ: {q}\nДЕТАЛИ: {a}\n\n"
+        
+        if current_length + len(match_text) > MAX_CHARS:
+            allowed = MAX_CHARS - current_length
             if allowed > 100: top_matches.append(match_text[:allowed] + "... [ОБРЕЗАНО]")
             break
         top_matches.append(match_text)
         current_length += len(match_text)
+
     return "".join(top_matches)
 
 def get_groq_answer(chat_id: str, user_message: str) -> str:
@@ -380,9 +407,7 @@ def get_groq_answer(chat_id: str, user_message: str) -> str:
     if not GROQ_API_KEY: return "🚨 ОШИБКА: Не задан GROQ_API_KEY."
 
     messages_for_api = [{"role": "system", "content": system_prompt}]
-    # Отдаем Groq только последние 4 сообщения, чтобы не тратить лимиты
     for msg in history[-4:]: 
-        # Groq принимает только роли user/assistant. Чистим всё лишнее.
         safe_msg = {"role": "assistant" if msg["role"] == "operator" else msg["role"], "content": msg["content"]}
         messages_for_api.append(safe_msg)
     
@@ -398,7 +423,6 @@ def get_groq_answer(chat_id: str, user_message: str) -> str:
             answer = data["choices"][0]["message"]["content"]
             history.append({"role": "user", "content": user_message})
             history.append({"role": "assistant", "content": answer})
-            # Оставляем в памяти до 50 сообщений для красивой истории в Web-панели!
             if len(history) > 50: user_sessions[chat_id] = history[-50:]
             return answer
         else:
@@ -434,9 +458,12 @@ def transfer_to_operator(user_id: str, user_name: str):
         if op_id and op_id != "ВТОРОЙ_ID_СЮДА":
             send_message_to_max(str(op_id), alert_text)
 
+# 🔴 ИЗМЕНЕНИЕ: Отдаем HTML-панель при открытии /webhook из мессенджера МАКС
 @app.api_route("/webhook", methods=["GET", "POST"])
 async def max_webhook(request: Request, background_tasks: BackgroundTasks):
-    if request.method == "GET": return {"status": "Webhook is active!"}
+    if request.method == "GET": 
+        return HTMLResponse(content=HTML_PANEL)
+        
     try:
         data = json.loads((await request.body()).decode("utf-8")) or {}
         msg = data.get("message", {})
@@ -457,18 +484,74 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
     return {"status": "ok"}
 
 def process_user_message(chat_id: str, text: str, user_name: str):
+    # Команды бота операторы все еще могут вводить вручную, если нужно
+    is_operator_command_handled = False 
+
+    if str(chat_id) in [str(op) for op in OPERATOR_IDS]:
+        text_lower = text.lower()
+        if text_lower.startswith("/клиенты") or text_lower.startswith("/list"):
+            if not active_tickets:
+                send_message_to_max(chat_id, "📭 Сейчас нет активных обращений от абитуриентов.")
+                return
+            current_target = operator_target.get(str(chat_id))
+            list_msg = "📋 *Активные обращения абитуриентов:*\n\n"
+            for u_id, info in active_tickets.items():
+                active_mark = " 👉 [ВАШ СОБЕСЕДНИК]" if u_id == current_target else ""
+                list_msg += f"👤 *{info['name']}* (ID: `{u_id}`){active_mark}\n"
+            list_msg += "\nДля выбора клиента отправьте:\n`/о [ID]`"
+            send_message_to_max(chat_id, list_msg)
+            return
+        elif text_lower.startswith("/о ") or text_lower.startswith("/select "):
+            parts = text.split(" ", 1)
+            if len(parts) >= 2:
+                target_user = parts[1].strip()
+                if target_user in active_tickets:
+                    operator_target[str(chat_id)] = target_user
+                    send_message_to_max(chat_id, f"✅ Вы закрепили абитуриента: *{active_tickets[target_user]['name']}*")
+                else: send_message_to_max(chat_id, f"❌ Абитуриент не найден.")
+            return
+        elif text_lower.startswith("/закрыть") or text_lower.startswith("/close"):
+            parts = text.split(" ", 1)
+            target_user = parts[1].strip() if len(parts) >= 2 else operator_target.get(str(chat_id))
+            if target_user and target_user in active_tickets:
+                name = active_tickets[target_user]["name"]
+                del active_tickets[target_user]
+                if operator_target.get(str(chat_id)) == target_user: operator_target.pop(str(chat_id), None)
+                send_message_to_max(target_user, "✅ Ваш диалог с приемной комиссией завершен. Бот снова к вашим услугам!")
+                send_message_to_max(chat_id, f"🔒 Тикет с абитуриентом *{name}* закрыт.")
+            else: send_message_to_max(chat_id, "❌ Укажите ID тикета для закрытия.")
+            return
+        else:
+            target_user = operator_target.get(str(chat_id))
+            if target_user and target_user in active_tickets:
+                client_name = active_tickets[target_user]["name"]
+                send_message_to_max(target_user, f"👨‍💻 *Специалист приемной комиссии:*\n\n{text}")
+                send_message_to_max(chat_id, f"↗️ [Вам ➔ {client_name}]: {text}")
+                
+                # Сохраняем ответ ручного ввода в историю для Web-панели
+                if target_user in user_sessions:
+                    user_sessions[target_user].append({"role": "assistant", "content": f"👨‍💻 Оператор: {text}"})
+                is_operator_command_handled = True
+
+    if is_operator_command_handled: return
+
     if text.strip().lower() == "/myid":
         send_message_to_max(chat_id, f"✅ Ваш внутренний ID:\n{chat_id}")
         return
 
-    # 1. РЕЖИМ ЖИВОГО ДИАЛОГА (Абитуриент уже ждет ответа оператора)
+    # РЕЖИМ ЖИВОГО ДИАЛОГА ДЛЯ АБИТУРИЕНТА
     if chat_id in active_tickets:
         if chat_id not in user_sessions: user_sessions[chat_id] = []
-        # Сохраняем сообщение, Web-панель сама его подтянет
         user_sessions[chat_id].append({"role": "user", "content": text})
+        
+        # Если операторы не в Web-панели, присылаем им сообщение в чат
+        client_name = active_tickets[chat_id]["name"]
+        live_alert = f"💬 *Сообщение от {client_name}* (ID: `{chat_id}`):\n\n{text}"
+        for op_id in OPERATOR_IDS:
+            if op_id and op_id != "ВТОРОЙ_ID_СЮДА": send_message_to_max(str(op_id), live_alert)
         return
 
-    # 2. РЕЖИМ УМНОГО ИИ-БОТА
+    # РЕЖИМ УМНОГО ИИ-БОТА
     clean_text_lower = re.sub(r'[^\w\s]', '', text.lower()).strip()
     if clean_text_lower in ["спасибо", "спс", "благодарю", "понял", "ок", "хорошо", "ясно", "понятно", "супер", "отлично"]:
         send_message_to_max(chat_id, "Рад был помочь! Если появятся еще вопросы — обращайтесь. Удачи с поступлением!")
