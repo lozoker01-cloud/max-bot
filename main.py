@@ -25,8 +25,8 @@ GOOGLE_SHEET_WEBHOOK = "https://script.google.com/macros/s/AKfycbzg8uTKzlKJkMY1M
 app = FastAPI()
 
 user_sessions = {}
-active_tickets = {}       # Активные тикеты: {user_id: {"name": name, "history": [...]}}
-operator_target = {}      # Личный фокус оператора: {op_id: user_id} (У каждого свой!)
+active_tickets = {}       
+operator_target = {}      
 faq_items = []
 
 def flatten_faq(data):
@@ -260,13 +260,15 @@ def transfer_to_operator(user_id: str, user_name: str):
         f"🔒 Чтобы закрыть тикет: `/закрыть {user_id}`"
     )
     
-    # Рассылаем уведомление обоим операторам, но НЕ трогаем их текущий фокус
     for op_id in OPERATOR_IDS:
         if op_id and op_id != "ВТОРОЙ_ID_СЮДА":
             send_message_to_max(str(op_id), alert_text)
 
 def process_user_message(chat_id: str, text: str, user_name: str):
-    # 1. ОБРАБОТКА СООБЩЕНИЙ ОТ ОПЕРАТОРОВ
+    # Флаг для пропуска сообщения к нейросети, если оператор не в режиме ответа
+    is_operator_command_handled = False 
+
+    # 1. ОБРАБОТКА КОМАНД И ДИАЛОГОВ ОТ ОПЕРАТОРОВ
     if str(chat_id) in [str(op) for op in OPERATOR_IDS]:
         text_lower = text.lower()
         
@@ -287,7 +289,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
             send_message_to_max(chat_id, list_msg)
             return
 
-        # Закрепить за собой клиента через /о [ID]
+        # Закрепить за собой клиента
         elif text_lower.startswith("/о ") or text_lower.startswith("/select ") or text_lower.startswith("/переключить "):
             parts = text.split(" ", 1)
             if len(parts) >= 2:
@@ -295,7 +297,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
                 if target_user in active_tickets:
                     operator_target[str(chat_id)] = target_user
                     client_name = active_tickets[target_user]["name"]
-                    send_message_to_max(chat_id, f"✅ Вы закрепили за собой абитуриента: *{client_name}* (ID: `{target_user}`). Теперь все ваши сообщения будут уходить только ему!")
+                    send_message_to_max(chat_id, f"✅ Вы закрепили за собой абитуриента: *{client_name}* (ID: `{target_user}`). Теперь ваши сообщения будут уходить ему!")
                 else:
                     send_message_to_max(chat_id, f"❌ Абитуриент с ID `{target_user}` не найден в активных тикетах.")
             else:
@@ -314,23 +316,28 @@ def process_user_message(chat_id: str, text: str, user_name: str):
                     operator_target.pop(str(chat_id), None)
                     
                 send_message_to_max(target_user, "✅ Ваш диалог с приемной комиссией завершен. Бот снова к вашим услугам!")
-                send_message_to_max(chat_id, f"🔒 Тикет с абитуриентом *{name}* (ID: {target_user}) закрыт.")
+                send_message_to_max(chat_id, f"🔒 Тикет с абитуриентом *{name}* (ID: {target_user}) закрыт. Вы снова можете общаться с ботом!")
             else:
                 send_message_to_max(chat_id, "❌ Укажите ID тикета для закрытия. Пример:\n`/закрыть [ID]`")
             return
 
-        # 💬 САМОЕ ГЛАВНОЕ: ОПЕРАТОР ПИШЕТ ОБЫЧНЫЙ ТЕКСТ
+        # 💬 ОПЕРАТОР ПИШЕТ ОБЫЧНЫЙ ТЕКСТ
         else:
             target_user = operator_target.get(str(chat_id))
-            if not target_user or target_user not in active_tickets:
-                send_message_to_max(chat_id, "⚠️ У вас не выбран активный клиент! Отправьте `/клиенты`, чтобы посмотреть список, или `/о [ID]`, чтобы начать диалог.")
-                return
             
-            # Отправка сообщения строго выбранному клиенту данного оператора
-            client_name = active_tickets[target_user]["name"]
-            send_message_to_max(target_user, f"👨‍💻 *Специалист приемной комиссии:*\n\n{text}")
-            send_message_to_max(chat_id, f"↗️ [Вам ➔ {client_name}]: {text}")
-            return
+            # Если оператор закрепил за собой студента — текст уходит студенту
+            if target_user and target_user in active_tickets:
+                client_name = active_tickets[target_user]["name"]
+                send_message_to_max(target_user, f"👨‍💻 *Специалист приемной комиссии:*\n\n{text}")
+                send_message_to_max(chat_id, f"↗️ [Вам ➔ {client_name}]: {text}")
+                is_operator_command_handled = True # Текст обработан, дальше идти не нужно
+            else:
+                # МАГИЯ ЗДЕСЬ: Если у оператора НЕТ активного студента, 
+                # мы ничего не блокируем. Мы позволяем коду пойти ниже, прямо к нейросети!
+                pass 
+
+    if is_operator_command_handled:
+        return
 
     if text.strip().lower() == "/myid":
         send_message_to_max(chat_id, f"✅ Ваш внутренний ID:\n{chat_id}")
@@ -362,7 +369,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         transfer_to_operator(chat_id, user_name)
         return
 
-    # 3. Обычный режим работы бота (Groq)
+    # 3. Обычный режим работы бота (Groq) — СЮДА ТЕПЕРЬ МОЖЕТ ПОПАСТЬ ОПЕРАТОР БЕЗ КЛИЕНТА
     bot_reply = get_groq_answer(chat_id, text)
     
     if "🚨 ОШИБКА" not in bot_reply:
@@ -378,7 +385,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
 
 @app.get("/")
 def root():
-    return {"status": "Bot is running with Independent Multi-Operator Helpdesk Sessions!"}
+    return {"status": "Bot is running! Operators can now talk to AI!"}
 
 @app.get("/reload_faq")
 def api_reload_faq():
