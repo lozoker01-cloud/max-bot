@@ -14,64 +14,42 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           password: ${{ secrets.VPS_PASSWORD }}
+          command_timeout: 40m  # <-- Даем установке достаточно времени на скачивание тяжелых библиотек
           script: |
-            # 0. Отключаем файрвол
-            sudo ufw disable || true
-
-            # 1. Устанавливаем системные зависимости Python и Nginx
+            # 1. Установка системных зависимостей
             sudo apt update -y
             sudo apt install -y python3-venv python3-pip nginx build-essential
 
-            # 2. Чистим и клонируем репозиторий
-            rm -rf /root/rgsu_bot
-            git clone https://github.com/lozoker01-cloud/max-bot.git /root/rgsu_bot
+            # 2. Обновление кода
+            mkdir -p /root/rgsu_bot
             cd /root/rgsu_bot
             
-            # 3. Находим, где лежит main.py
-            MAIN_PATH=$(find /root/rgsu_bot -name "main.py" | head -n 1)
-            if [ -z "$MAIN_PATH" ]; then
-              echo "ERROR: main.py not found!"
-              exit 1
-            fi
-            MAIN_DIR=$(dirname "$MAIN_PATH")
-            echo "Found main.py in: $MAIN_DIR"
+            if [ -d ".git" ]; then
+              git pull origin main
+            else
+              git clone https://github.com/lozoker01/max-bot.git .
+            end
             
-            # 4. Создаем папки для ресурсов и документов
-            mkdir -p "$MAIN_DIR/resources" "$MAIN_DIR/docs"
+            # 3. Создание папок для ресурсов и документов
+            mkdir -p resources docs
             
-            # 5. Создаем файл .env
-            echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" > "$MAIN_DIR/.env"
-            echo "MAX_BOT_TOKEN=${{ secrets.MAX_BOT_TOKEN }}" >> "$MAIN_DIR/.env"
-            echo "RENDER_EXTERNAL_URL=https://rgsubot.duckdns.org" >> "$MAIN_DIR/.env"
+            # 4. Создание файла .env
+            echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" > .env
+            echo "MAX_BOT_TOKEN=${{ secrets.MAX_BOT_TOKEN }}" >> .env
+            echo "RENDER_EXTERNAL_URL=https://rgsubot.duckdns.org" >> .env
             
-            # 6. Устанавливаем зависимости БЕЗ флага --quiet, чтобы видеть процесс установки
-            python3 -m venv /root/rgsu_bot/venv
-            /root/rgsu_bot/venv/bin/pip install --upgrade pip
+            # 5. Создание виртуального окружения и установка всех библиотек из requirements.txt
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install --upgrade pip
             
-            if [ -f "$MAIN_DIR/requirements.txt" ]; then
-              /root/rgsu_bot/venv/bin/pip install -r "$MAIN_DIR/requirements.txt"
-            elif [ -f "requirements.txt" ]; then
-              /root/rgsu_bot/venv/bin/pip install -r requirements.txt
+            if [ -f "requirements.txt" ]; then
+              pip install -r requirements.txt
             fi
             
-            /root/rgsu_bot/venv/bin/pip install uvicorn fastapi requests groq
+            pip install uvicorn fastapi requests groq
             
-            # 7. ТЕСТ ИМПОРТА С ПОЛНЫМ ТРЕЙСБЕКОМ (покажет точную строку ошибки в Python)
-            echo "=== TESTING PYTHON IMPORT ==="
-            /root/rgsu_bot/venv/bin/python3 -c "
-            import sys
-            sys.path.insert(0, '$MAIN_DIR')
-            try:
-                import main
-                print('SUCCESS: main.py imported without errors!')
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                sys.exit(1)
-            "
-            echo "=== TEST END ==="
-
-            # 8. Настраиваем веб-сервер Nginx (HTTPS проксирование на порт 8000)
+            # 6. Настройка веб-сервера Nginx (HTTPS проксирование)
             sudo bash -c 'cat > /etc/nginx/sites-available/rgsubot << "EOF"
             server {
                 listen 80;
@@ -100,14 +78,7 @@ jobs:
             sudo rm -f /etc/nginx/sites-enabled/default
             sudo nginx -t && sudo systemctl restart nginx
 
-            # 9. Создаем скрипт запуска и системную службу
-            cat > /root/rgsu_bot/start.sh << EOF
-            #!/bin/bash
-            cd $MAIN_DIR
-            exec /root/rgsu_bot/venv/bin/python3 -m uvicorn main:app --host 127.0.0.1 --port 8000
-            EOF
-            chmod +x /root/rgsu_bot/start.sh
-
+            # 7. Настройка и запуск системной службы
             sudo bash -c 'cat > /etc/systemd/system/rgsubot.service << "EOF"
             [Unit]
             Description=RGSU Bot RAG Service
@@ -117,7 +88,7 @@ jobs:
             User=root
             WorkingDirectory=/root/rgsu_bot
             EnvironmentFile=/root/rgsu_bot/.env
-            ExecStart=/root/rgsu_bot/start.sh
+            ExecStart=/root/rgsu_bot/venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
             Restart=always
 
             [Install]
@@ -127,5 +98,6 @@ jobs:
             sudo systemctl daemon-reload
             sudo systemctl enable rgsubot
             sudo systemctl restart rgsubot
-
-
+            
+            sleep 3
+            sudo systemctl status rgsubot --no-pager || true
