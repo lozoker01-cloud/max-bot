@@ -15,51 +15,78 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           password: ${{ secrets.VPS_PASSWORD }}
           script: |
-            # 0. Открываем порты в фаерволе сервера
-            sudo ufw allow 80
-            sudo ufw allow 443
-            sudo ufw allow 'Nginx Full'
-            sudo ufw --force enable
-            
+            # 0. Отключаем файрвол, чтобы сайт и вебхук не блокировались
+            sudo ufw disable || true
+
+            # 1. Скачивание или обновление кода
             mkdir -p ~/rgsu_bot
             cd ~/rgsu_bot
             
-            # Автоматически создаем файл с ключами из GitHub Secrets
+            if [ -d ".git" ]; then
+              git pull origin main
+            else
+              git clone https://github.com/lozoker01/max-bot.git .
+            fi
+            
+            # 2. Автоматическое создание файла .env со всеми ключами и адресом вебхука
             echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" > .env
             echo "MAX_BOT_TOKEN=${{ secrets.MAX_BOT_TOKEN }}" >> .env
             echo "RENDER_EXTERNAL_URL=https://rgsubot.duckdns.org" >> .env
             
-            # Клонируем или обновляем код
-            if [ -d ".git" ]; then
-              git pull origin main
-            else
-              git clone https://github.com/lozoker01-cloud/max-bot.git .
-            fi
-            
-            # Ставим зависимости и перезапускаем
+            # 3. Настройка Python, окружения и зависимостей
             python3 -m venv venv
             source venv/bin/activate
+            pip install --upgrade pip
             pip install -r requirements.txt --quiet
             
-            # Создаем системную службу один раз автоматически, если её нет
-            if [ ! -f /etc/systemd/system/rgsubot.service ]; then
-              sudo bash -c 'cat > /etc/systemd/system/rgsubot.service << "EOF"
-              [Unit]
-              Description=RGSU Bot RAG Service
-              After=network.target
-
-              [Service]
-              User=root
-              WorkingDirectory=/root/rgsu_bot
-              EnvironmentFile=/root/rgsu_bot/.env
-              ExecStart=/root/rgsu_bot/venv/bin/uvicorn main:app --host 0.0.0.0 --port 80
-              Restart=always
-
-              [Install]
-              WantedBy=multi-user.target
-              EOF'
-              sudo systemctl daemon-reload
-              sudo systemctl enable rgsubot
-            fi
+            # 4. Настройка веб-сервера Nginx (HTTPS проксирование на порт 8000)
+            sudo apt update -y && sudo apt install -y nginx
             
+            sudo bash -c 'cat > /etc/nginx/sites-available/rgsubot << "EOF"
+            server {
+                listen 80;
+                server_name rgsubot.duckdns.org;
+                return 301 https://$host$request_uri;
+            }
+            server {
+                listen 443 ssl;
+                server_name rgsubot.duckdns.org;
+                ssl_certificate /etc/letsencrypt/live/rgsubot.duckdns.org/fullchain.pem;
+                ssl_certificate_key /etc/letsencrypt/live/rgsubot.duckdns.org/privkey.pem;
+                location / {
+                    proxy_pass http://127.0.0.1:8000;
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection "upgrade";
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+            }
+            EOF'
+            
+            sudo ln -sf /etc/nginx/sites-available/rgsubot /etc/nginx/sites-enabled/
+            sudo rm -f /etc/nginx/sites-enabled/default
+            sudo nginx -t && sudo systemctl restart nginx
+
+            # 5. Создание и запуск системной службы (systemd) с корректным путем к uvicorn
+            sudo bash -c 'cat > /etc/systemd/system/rgsubot.service << "EOF"
+            [Unit]
+            Description=RGSU Bot RAG Service
+            After=network.target
+
+            [Service]
+            User=root
+            WorkingDirectory=/root/rgsu_bot
+            EnvironmentFile=/root/rgsu_bot/.env
+            ExecStart=/root/rgsu_bot/venv/bin/python3 -m uvicorn main:app --host 127.0.0.1 --port 8000
+            Restart=always
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF'
+            
+            sudo systemctl daemon-reload
+            sudo systemctl enable rgsubot
             sudo systemctl restart rgsubot
