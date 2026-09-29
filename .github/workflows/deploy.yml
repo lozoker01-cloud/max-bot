@@ -15,7 +15,7 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           password: ${{ secrets.VPS_PASSWORD }}
           script: |
-            # 0. Отключаем файрвол, чтобы сайт и вебхук не блокировались
+            # 0. Отключаем файрвол
             sudo ufw disable || true
 
             # 1. Скачивание или обновление кода
@@ -28,18 +28,19 @@ jobs:
               git clone https://github.com/lozoker01/max-bot.git .
             fi
             
-            # 2. Автоматическое создание файла .env со всеми ключами и адресом вебхука
+            # 2. Создание файла .env со всеми ключами и вебхуком
             echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" > .env
             echo "MAX_BOT_TOKEN=${{ secrets.MAX_BOT_TOKEN }}" >> .env
             echo "RENDER_EXTERNAL_URL=https://rgsubot.duckdns.org" >> .env
             
-            # 3. Настройка Python, окружения и зависимостей
+            # 3. Настройка Python, зависимостей и принудительная установка uvicorn
             python3 -m venv venv
             source venv/bin/activate
             pip install --upgrade pip
             pip install -r requirements.txt --quiet
+            pip install uvicorn fastapi --quiet
             
-            # 4. Настройка веб-сервера Nginx (HTTPS проксирование на порт 8000)
+            # 4. Настройка веб-сервера Nginx (HTTPS проксирование)
             sudo apt update -y && sudo apt install -y nginx
             
             sudo bash -c 'cat > /etc/nginx/sites-available/rgsubot << "EOF"
@@ -70,7 +71,7 @@ jobs:
             sudo rm -f /etc/nginx/sites-enabled/default
             sudo nginx -t && sudo systemctl restart nginx
 
-            # 5. Создание и запуск системной службы (systemd) с корректным путем к uvicorn
+            # 5. Создание и запуск системной службы бота
             sudo bash -c 'cat > /etc/systemd/system/rgsubot.service << "EOF"
             [Unit]
             Description=RGSU Bot RAG Service
@@ -90,3 +91,8 @@ jobs:
             sudo systemctl daemon-reload
             sudo systemctl enable rgsubot
             sudo systemctl restart rgsubot
+            
+            # 6. Автоматический вывод статуса и логов прямо в отчет GitHub Actions (никакой консоли!)
+            sleep 2
+            sudo systemctl status rgsubot --no-pager || true
+            sudo journalctl -u rgsubot -n 30 --no-pager || true
