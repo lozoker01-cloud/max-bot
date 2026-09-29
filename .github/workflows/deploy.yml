@@ -26,7 +26,7 @@ jobs:
             if [ -d ".git" ]; then
               git pull origin main
             else
-              git clone https://github.com/ВАШ_АККАУНТ/ВАШ_РЕПОЗИТОРИЙ.git .
+              git clone https://github.com/lozoker01-cloud/max-bot.git .
             fi
             
             # Ставим зависимости и перезапускаем
