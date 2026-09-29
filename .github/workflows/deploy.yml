@@ -33,7 +33,7 @@ jobs:
             if [ -z "$MAIN_PATH" ]; then
               echo "ERROR: main.py not found in repository!"
               exit 1
-            fi
+            \fi
             MAIN_DIR=$(dirname "$MAIN_PATH")
             echo "Found main.py in: $MAIN_DIR"
             
@@ -84,7 +84,7 @@ jobs:
             sudo rm -f /etc/nginx/sites-enabled/default
             sudo nginx -t && sudo systemctl restart nginx
 
-            # 8. Создаем надежный скрипт запуска Uvicorn
+            # 8. Создаем скрипт запуска
             cat > /root/rgsu_bot/start.sh << EOF
             #!/bin/bash
             cd $MAIN_DIR
@@ -92,9 +92,9 @@ jobs:
             EOF
             chmod +x /root/rgsu_bot/start.sh
 
-            # 9. Перезапускаем системную службу
-            sudo bash -c 'cat > /etc/systemd/system/rgsubot.service << "EOF"
-            [Unit]
+            # 9. Создаем системную службу с подставленными абсолютными путями
+            sudo rm -f /etc/systemd/system/rgsubot.service
+            sudo bash -c "echo '[Unit]
             Description=RGSU Bot RAG Service
             After=network.target
 
@@ -106,14 +106,13 @@ jobs:
             Restart=always
 
             [Install]
-            WantedBy=multi-user.target
-            EOF'
+            WantedBy=multi-user.target' > /etc/systemd/system/rgsubot.service"
             
             sudo systemctl daemon-reload
             sudo systemctl enable rgsubot
             sudo systemctl restart rgsubot
             
-            # 10. Проверка работы порта 8000
+            # 10. Финальная проверка порта и службы
             sleep 4
             echo "=== CHECKING PORT 8000 ==="
             ss -tulpn | grep 8000 || echo "WARNING: Port 8000 is not listening!"
