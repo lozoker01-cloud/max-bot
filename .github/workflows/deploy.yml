@@ -18,24 +18,29 @@ jobs:
             # 0. Отключаем файрвол
             sudo ufw disable || true
 
-            # 1. Жестко очищаем старую папку и качаем репозиторий с нуля (гарантия актуальных файлов)
+            # 1. Чистим и клонируем репозиторий заново
             rm -rf ~/rgsu_bot
             git clone https://github.com/lozoker01/max-bot.git ~/rgsu_bot
             cd ~/rgsu_bot
             
-            # 2. Создание файла .env со всеми ключами и вебхуком
+            # 2. Автоматически создаем пустые папки ресурсов/документов, если их нет в Git
+            mkdir -p resources docs
+            
+            # 3. Создание файла .env со всеми ключами и вебхуком
             echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" > .env
             echo "MAX_BOT_TOKEN=${{ secrets.MAX_BOT_TOKEN }}" >> .env
             echo "RENDER_EXTERNAL_URL=https://rgsubot.duckdns.org" >> .env
             
-            # 3. Настройка Python, зависимостей и установка uvicorn/fastapi
+            # 4. Настройка Python и зависимостей
             python3 -m venv venv
             source venv/bin/activate
             pip install --upgrade pip
-            pip install -r requirements.txt --quiet
+            if [ -f "requirements.txt" ]; then
+              pip install -r requirements.txt --quiet
+            fi
             pip install uvicorn fastapi --quiet
             
-            # 4. Настройка веб-сервера Nginx (HTTPS проксирование)
+            # 5. Настройка веб-сервера Nginx (HTTPS проксирование)
             sudo apt update -y && sudo apt install -y nginx
             
             sudo bash -c 'cat > /etc/nginx/sites-available/rgsubot << "EOF"
@@ -66,7 +71,7 @@ jobs:
             sudo rm -f /etc/nginx/sites-enabled/default
             sudo nginx -t && sudo systemctl restart nginx
 
-            # 5. Создание и запуск системной службы бота
+            # 6. Создание и запуск системной службы бота
             sudo bash -c 'cat > /etc/systemd/system/rgsubot.service << "EOF"
             [Unit]
             Description=RGSU Bot RAG Service
@@ -87,7 +92,7 @@ jobs:
             sudo systemctl enable rgsubot
             sudo systemctl restart rgsubot
             
-            # 6. Автоматический вывод статуса и логов прямо в отчет GitHub Actions
+            # 7. Вывод логов для проверки в Actions
             sleep 2
             sudo systemctl status rgsubot --no-pager || true
             sudo journalctl -u rgsubot -n 30 --no-pager || true
