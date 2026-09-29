@@ -18,36 +18,40 @@ jobs:
             # 0. Отключаем файрвол
             sudo ufw disable || true
 
-            # 1. Чистим и клонируем репозиторий
-            rm -rf ~/rgsu_bot
-            git clone https://github.com/lozoker01/max-bot.git ~/rgsu_bot
-            cd ~/rgsu_bot
+            # 1. Устанавливаем системные зависимости (включая python3-venv для корректного создания окружения)
+            sudo apt update -y
+            sudo apt install -y python3-venv python3-pip nginx
+
+            # 2. Чистим и клонируем репозиторий в /root/rgsu_bot
+            rm -rf /root/rgsu_bot
+            git clone https://github.com/lozoker01/max-bot.git /root/rgsu_bot
+            cd /root/rgsu_bot
             
-            # 2. Создаем папки для документов и ресурсов
-            mkdir -p ~/rgsu_bot/resources ~/rgsu_bot/docs
+            # 3. Создаем папки для ресурсов и документов
+            mkdir -p /root/rgsu_bot/resources /root/rgsu_bot/docs
             
-            # 3. Создаем файл .env со всеми ключами и вебхуком
-            echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" > ~/rgsu_bot/.env
-            echo "MAX_BOT_TOKEN=${{ secrets.MAX_BOT_TOKEN }}" >> ~/rgsu_bot/.env
-            echo "RENDER_EXTERNAL_URL=https://rgsubot.duckdns.org" >> ~/rgsu_bot/.env
+            # 4. Создаем файл .env со всеми ключами и вебхуком
+            echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" > /root/rgsu_bot/.env
+            echo "MAX_BOT_TOKEN=${{ secrets.MAX_BOT_TOKEN }}" >> /root/rgsu_bot/.env
+            echo "RENDER_EXTERNAL_URL=https://rgsubot.duckdns.org" >> /root/rgsu_bot/.env
             
-            # 4. Настраиваем Python и принудительно ставим все возможные зависимости
-            python3 -m venv venv
-            source venv/bin/activate
-            pip install --upgrade pip
+            # 5. Создаем виртуальное окружение и устанавливаем пакеты через абсолютные пути
+            python3 -m venv /root/rgsu_bot/venv
+            /root/rgsu_bot/venv/bin/pip install --upgrade pip
             if [ -f "requirements.txt" ]; then
-              pip install -r requirements.txt
+              /root/rgsu_bot/venv/bin/pip install -r requirements.txt --quiet
             fi
-            pip install uvicorn fastapi requests groq --quiet
+            /root/rgsu_bot/venv/bin/pip install uvicorn fastapi requests groq --quiet
             
-            # 5. ТЕСТОВЫЙ ЗАПУСК ИМПОРТА: покажет точную ошибку Python прямо в логах GitHub Actions!
-            echo "=== TESTING PYTHON IMPORT ==="
-            python3 -c "import main; print('SUCCESS: main.py imported successfully!')"
-            echo "=== TEST END ==="
+            # 6. Создаем надежный скрипт запуска start.sh с абсолютными путями
+            cat > /root/rgsu_bot/start.sh << 'EOF'
+            #!/bin/bash
+            cd /root/rgsu_bot
+            exec /root/rgsu_bot/venv/bin/python3 -m uvicorn main:app --host 127.0.0.1 --port 8000
+            EOF
+            chmod +x /root/rgsu_bot/start.sh
             
-            # 6. Настраиваем веб-сервер Nginx (HTTPS проксирование)
-            sudo apt update -y && sudo apt install -y nginx
-            
+            # 7. Настраиваем веб-сервер Nginx (HTTPS проксирование на порт 8000)
             sudo bash -c 'cat > /etc/nginx/sites-available/rgsubot << "EOF"
             server {
                 listen 80;
@@ -76,15 +80,7 @@ jobs:
             sudo rm -f /etc/nginx/sites-enabled/default
             sudo nginx -t && sudo systemctl restart nginx
 
-            # 7. Запуск службы через скрипт
-            cat > ~/rgsu_bot/start.sh << 'EOF'
-            #!/bin/bash
-            cd /root/rgsu_bot
-            source venv/bin/activate
-            exec python3 -m uvicorn main:app --host 127.0.0.1 --port 8000
-            EOF
-            chmod +x ~/rgsu_bot/start.sh
-
+            # 8. Настраиваем и запускаем системную службу
             sudo bash -c 'cat > /etc/systemd/system/rgsubot.service << "EOF"
             [Unit]
             Description=RGSU Bot RAG Service
@@ -105,5 +101,6 @@ jobs:
             sudo systemctl enable rgsubot
             sudo systemctl restart rgsubot
             
+            # 9. Финальная проверка статуса службы
             sleep 3
             sudo systemctl status rgsubot --no-pager || true
