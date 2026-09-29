@@ -21,6 +21,7 @@ jobs:
             # Автоматически создаем файл с ключами из GitHub Secrets
             echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" > .env
             echo "MAX_BOT_TOKEN=${{ secrets.MAX_BOT_TOKEN }}" >> .env
+            echo "RENDER_EXTERNAL_URL=https://rgsubot.duckdns.org" >> .env
             
             # Клонируем или обновляем код
             if [ -d ".git" ]; then
