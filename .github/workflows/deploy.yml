@@ -24,7 +24,7 @@ jobs:
 
             # 2. Чистим и клонируем репозиторий
             rm -rf /root/rgsu_bot
-            git clone https://github.com/lozoker01-cloud/max-bot.git/root/rgsu_bot
+            git clone https://github.com/lozoker01-cloud/max-bot.git /root/rgsu_bot
             cd /root/rgsu_bot
             
             # 3. Находим, где лежит main.py
