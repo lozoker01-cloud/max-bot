@@ -18,20 +18,20 @@ jobs:
             # 0. Отключаем файрвол
             sudo ufw disable || true
 
-            # 1. Чистим и клонируем репозиторий заново
+            # 1. Жестко очищаем и клонируем репозиторий
             rm -rf ~/rgsu_bot
             git clone https://github.com/lozoker01/max-bot.git ~/rgsu_bot
             cd ~/rgsu_bot
             
-            # 2. Автоматически создаем пустые папки ресурсов/документов, если их нет в Git
-            mkdir -p resources docs
+            # 2. Сразу создаем все необходимые папки для документов и ресурсов
+            mkdir -p ~/rgsu_bot/resources ~/rgsu_bot/docs
             
-            # 3. Создание файла .env со всеми ключами и вебхуком
-            echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" > .env
-            echo "MAX_BOT_TOKEN=${{ secrets.MAX_BOT_TOKEN }}" >> .env
-            echo "RENDER_EXTERNAL_URL=https://rgsubot.duckdns.org" >> .env
+            # 3. Создаем файл .env ПЕРЕД запуском службы
+            echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" > ~/rgsu_bot/.env
+            echo "MAX_BOT_TOKEN=${{ secrets.MAX_BOT_TOKEN }}" >> ~/rgsu_bot/.env
+            echo "RENDER_EXTERNAL_URL=https://rgsubot.duckdns.org" >> ~/rgsu_bot/.env
             
-            # 4. Настройка Python и зависимостей
+            # 4. Настраиваем Python и зависимости
             python3 -m venv venv
             source venv/bin/activate
             pip install --upgrade pip
@@ -40,7 +40,7 @@ jobs:
             fi
             pip install uvicorn fastapi --quiet
             
-            # 5. Настройка веб-сервера Nginx (HTTPS проксирование)
+            # 5. Настраиваем веб-сервер Nginx (HTTPS проксирование)
             sudo apt update -y && sudo apt install -y nginx
             
             sudo bash -c 'cat > /etc/nginx/sites-available/rgsubot << "EOF"
@@ -71,7 +71,7 @@ jobs:
             sudo rm -f /etc/nginx/sites-enabled/default
             sudo nginx -t && sudo systemctl restart nginx
 
-            # 6. Создание и запуск системной службы бота
+            # 6. Создаем и запускаем системную службу ТОЛЬКО после того, как все файлы и папки на месте
             sudo bash -c 'cat > /etc/systemd/system/rgsubot.service << "EOF"
             [Unit]
             Description=RGSU Bot RAG Service
@@ -92,7 +92,7 @@ jobs:
             sudo systemctl enable rgsubot
             sudo systemctl restart rgsubot
             
-            # 7. Вывод логов для проверки в Actions
-            sleep 2
+            # 7. Финальная проверка логов в Actions
+            sleep 3
             sudo systemctl status rgsubot --no-pager || true
-            sudo journalctl -u rgsubot -n 30 --no-pager || true
+            sudo journalctl -u rgsubot -n 20 --no-pager || true
