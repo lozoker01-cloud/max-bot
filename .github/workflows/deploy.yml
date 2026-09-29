@@ -28,7 +28,7 @@ jobs:
             git clone https://github.com/lozoker01-cloud/max-bot.git /root/rgsu_bot
             cd /root/rgsu_bot
             
-            # 3. Автоматически находим, в какой папке лежит main.py
+            # 3. Находим, где лежит main.py
             MAIN_PATH=$(find /root/rgsu_bot -name "main.py" | head -n 1)
             if [ -z "$MAIN_PATH" ]; then
               echo "ERROR: main.py not found in repository!"
@@ -45,16 +45,14 @@ jobs:
             echo "MAX_BOT_TOKEN=${{ secrets.MAX_BOT_TOKEN }}" >> "$MAIN_DIR/.env"
             echo "RENDER_EXTERNAL_URL=https://rgsubot.duckdns.org" >> "$MAIN_DIR/.env"
             
-            # 6. Создаем виртуальное окружение и устанавливаем ВСЕ зависимости из корня
+            # 6. Настраиваем виртуальное окружение и зависимости
             python3 -m venv /root/rgsu_bot/venv
             /root/rgsu_bot/venv/bin/pip install --upgrade pip
             
-            # Устанавливаем requirements из корня проекта
             if [ -f "/root/rgsu_bot/requirements.txt" ]; then
               /root/rgsu_bot/venv/bin/pip install -r /root/rgsu_bot/requirements.txt
             fi
             
-            # Доустанавливаем базовые обязательные пакеты
             /root/rgsu_bot/venv/bin/pip install uvicorn fastapi requests groq langchain langchain-core
             
             # 7. Настраиваем веб-сервер Nginx
@@ -86,7 +84,7 @@ jobs:
             sudo rm -f /etc/nginx/sites-enabled/default
             sudo nginx -t && sudo systemctl restart nginx
 
-            # 8. Создаем скрипт запуска
+            # 8. Создаем надежный скрипт запуска Uvicorn
             cat > /root/rgsu_bot/start.sh << EOF
             #!/bin/bash
             cd $MAIN_DIR
@@ -94,7 +92,7 @@ jobs:
             EOF
             chmod +x /root/rgsu_bot/start.sh
 
-            # 9. Запускаем системную службу
+            # 9. Перезапускаем системную службу
             sudo bash -c 'cat > /etc/systemd/system/rgsubot.service << "EOF"
             [Unit]
             Description=RGSU Bot RAG Service
@@ -102,8 +100,8 @@ jobs:
 
             [Service]
             User=root
-            WorkingDirectory=/root/rgsu_bot
-            EnvironmentFile=/root/rgsu_bot/.env
+            WorkingDirectory=$MAIN_DIR
+            EnvironmentFile=$MAIN_DIR/.env
             ExecStart=/root/rgsu_bot/start.sh
             Restart=always
 
@@ -115,7 +113,8 @@ jobs:
             sudo systemctl enable rgsubot
             sudo systemctl restart rgsubot
             
-            # 10. Финальная проверка статуса службы
+            # 10. Проверка работы порта 8000
             sleep 4
-            echo "=== SYSTEMD STATUS ==="
+            echo "=== CHECKING PORT 8000 ==="
+            ss -tulpn | grep 8000 || echo "WARNING: Port 8000 is not listening!"
             sudo systemctl status rgsubot --no-pager || true
