@@ -14,7 +14,7 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           password: ${{ secrets.VPS_PASSWORD }}
-          command_timeout: 40m  # <-- Увеличенный таймаут для спокойной установки тяжелых пакетов
+          command_timeout: 40m
           script: |
             # 0. Отключаем файрвол
             sudo ufw disable || true
@@ -37,7 +37,7 @@ jobs:
             MAIN_DIR=$(dirname "$MAIN_PATH")
             echo "Found main.py in: $MAIN_DIR"
             
-            # 4. Создаем папки для ресурсов и документов в найденной директории
+            # 4. Создаем папки для ресурсов и документов
             mkdir -p "$MAIN_DIR/resources" "$MAIN_DIR/docs"
             
             # 5. Создаем файл .env
@@ -45,19 +45,19 @@ jobs:
             echo "MAX_BOT_TOKEN=${{ secrets.MAX_BOT_TOKEN }}" >> "$MAIN_DIR/.env"
             echo "RENDER_EXTERNAL_URL=https://rgsubot.duckdns.org" >> "$MAIN_DIR/.env"
             
-            # 6. Настраиваем виртуальное окружение и зависимости
+            # 6. Создаем виртуальное окружение и устанавливаем ВСЕ зависимости из корня
             python3 -m venv /root/rgsu_bot/venv
             /root/rgsu_bot/venv/bin/pip install --upgrade pip
             
-            if [ -f "$MAIN_DIR/requirements.txt" ]; then
-              /root/rgsu_bot/venv/bin/pip install -r "$MAIN_DIR/requirements.txt"
-            elif [ -f "requirements.txt" ]; then
-              /root/rgsu_bot/venv/bin/pip install -r requirements.txt
+            # Устанавливаем requirements из корня проекта
+            if [ -f "/root/rgsu_bot/requirements.txt" ]; then
+              /root/rgsu_bot/venv/bin/pip install -r /root/rgsu_bot/requirements.txt
             fi
             
-            /root/rgsu_bot/venv/bin/pip install uvicorn fastapi requests groq
+            # Доустанавливаем базовые обязательные пакеты
+            /root/rgsu_bot/venv/bin/pip install uvicorn fastapi requests groq langchain langchain-core
             
-            # 7. Настраиваем веб-сервер Nginx (HTTPS проксирование на порт 8000)
+            # 7. Настраиваем веб-сервер Nginx
             sudo bash -c 'cat > /etc/nginx/sites-available/rgsubot << "EOF"
             server {
                 listen 80;
@@ -86,7 +86,7 @@ jobs:
             sudo rm -f /etc/nginx/sites-enabled/default
             sudo nginx -t && sudo systemctl restart nginx
 
-            # 8. Создаем скрипт запуска с учетом реального расположения main.py
+            # 8. Создаем скрипт запуска
             cat > /root/rgsu_bot/start.sh << EOF
             #!/bin/bash
             cd $MAIN_DIR
@@ -115,5 +115,7 @@ jobs:
             sudo systemctl enable rgsubot
             sudo systemctl restart rgsubot
             
-            sleep 3
+            # 10. Финальная проверка статуса службы
+            sleep 4
+            echo "=== SYSTEMD STATUS ==="
             sudo systemctl status rgsubot --no-pager || true
