@@ -15,6 +15,12 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           password: ${{ secrets.VPS_PASSWORD }}
           script: |
+            # 0. Открываем порты в фаерволе сервера
+            sudo ufw allow 80
+            sudo ufw allow 443
+            sudo ufw allow 'Nginx Full'
+            sudo ufw --force enable
+            
             mkdir -p ~/rgsu_bot
             cd ~/rgsu_bot
             
