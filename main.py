@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 # --- БИБЛИОТЕКИ ДЛЯ RAG И PDF ---
-import pymupdf4llm  # Используем продвинутый парсер вместо PyPDF2
+import fitz  # Надежный парсер PyMuPDF, работающий с любыми путями и кириллицей
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -67,14 +67,18 @@ def build_rag_database():
     for filename in os.listdir(docs_dir):
         filepath = os.path.join(docs_dir, filename)
         if filename.endswith(".pdf"):
-            # 👇 ЭТА СТРОКА ПОКАЖЕТ, НА КАКОМ ФАЙЛЕ ЗАВИСАЕТ СЕРВЕР 👇
             print(f"⏳ Начинаю парсинг файла: {filename}...", flush=True)
             try:
-                # Магия: превращаем PDF в структурированный Markdown
-                md_text = pymupdf4llm.to_markdown(filepath)
-                if md_text.strip():
-                    raw_docs.append(Document(page_content=md_text, metadata={"source": filename}))
+                text = ""
+                with fitz.open(filepath) as doc:
+                    for page in doc:
+                        text += page.get_text() + "\n"
+                
+                if text.strip():
+                    raw_docs.append(Document(page_content=text, metadata={"source": filename}))
                     print(f"✅ Успешно прочитан PDF: {filename}", flush=True)
+                else:
+                    print(f"⚠️ Внимание: файл {filename} пустой или не содержит текста!", flush=True)
             except Exception as e:
                 print(f"❌ Ошибка чтения PDF {filename}: {e}", flush=True)
                 
