@@ -326,6 +326,10 @@ def api_close(user_id: str):
     uid = str(user_id)
     if uid in active_tickets:
         del active_tickets[uid]
+                # Очищаем привязку у всех операторов, кто держал этот тикет выбранным
+        for op_key, target in list(operator_target.items()):
+            if target == uid:
+                operator_target.pop(op_key, None)
         send_message_to_max(uid, "✅ Ваш диалог со специалистом завершен. Цифровой помощник снова к вашим услугам!")
     return {"status": "ok"}
 
