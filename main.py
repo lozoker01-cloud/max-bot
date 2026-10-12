@@ -1,7 +1,7 @@
 import os
 
 # =====================================================================
-# 🚨 ВАЖНО: ПРОКСИ ДЛЯ GROQ СТАВИМ В САМОЕ НАЧАЛО ДО ВСЕХ ИМПОРТОВ!
+# 🚨 ПРОКСИ ДЛЯ GROQ (СТАВИТЬ СТРОГО ДО ИНИЦИАЛИЗАЦИИ ИМПОРТОВ!)
 # =====================================================================
 os.environ["HTTP_PROXY"] = "socks5h://127.0.0.1:10808"
 os.environ["HTTPS_PROXY"] = "socks5h://127.0.0.1:10808"
@@ -15,12 +15,12 @@ from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-# --- НОВЫЕ БИБЛИОТЕКИ ДЛЯ RAG И PDF ---
+# --- БИБЛИОТЕКИ ДЛЯ RAG И PDF ---
 import PyPDF2
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document  # Обновленный импорт для современных версий LangChain
+from langchain_core.documents import Document
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -49,7 +49,6 @@ operator_target = {}
 # =====================================================================
 vector_db = None
 
-# Используем легкую и лучшую модель для русского языка (почти не ест оперативку)
 try:
     embedder = HuggingFaceEmbeddings(model_name="cointegrated/rubert-tiny2")
 except Exception as e:
@@ -61,13 +60,11 @@ def build_rag_database():
     print("🔄 Создание векторной базы (RAG)...")
     docs_dir = "docs"
     
-    # Создаем папку docs, если её нет
     if not os.path.exists(docs_dir):
         os.makedirs(docs_dir)
 
     raw_docs = []
     
-    # 1. Читаем все PDF и TXT из папки docs
     for filename in os.listdir(docs_dir):
         filepath = os.path.join(docs_dir, filename)
         if filename.endswith(".pdf"):
@@ -87,11 +84,9 @@ def build_rag_database():
             except Exception as e:
                 print(f"Ошибка чтения TXT {filename}: {e}")
                 
-    # 2. Заглушка, чтобы FAISS не упал, если папка пуста
     if not raw_docs:
         raw_docs.append(Document(page_content="База знаний пока пуста. Оператор подскажет.", metadata={"source": "system"}))
         
-    # 3. Умная нарезка текста (чанкинг) с перекрытием контекста
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=800,       
         chunk_overlap=200,    
@@ -99,7 +94,6 @@ def build_rag_database():
     )
     chunks = text_splitter.split_documents(raw_docs)
     
-    # 4. Векторизация и создание FAISS
     if embedder:
         try:
             vector_db = FAISS.from_documents(chunks, embedder)
@@ -324,12 +318,15 @@ def api_reply(data: ReplyData):
 @app.post("/api/close/{user_id}")
 def api_close(user_id: str):
     uid = str(user_id)
+    print(f"🔒 ЗАПРОС НА ЗАКРЫТИЕ ТИКЕТА ДЛЯ ID: '{uid}'")
+    
     if uid in active_tickets:
         del active_tickets[uid]
-                # Очищаем привязку у всех операторов, кто держал этот тикет выбранным
+        # Очищаем привязки операторов
         for op_key, target in list(operator_target.items()):
             if target == uid:
                 operator_target.pop(op_key, None)
+                
         send_message_to_max(uid, "✅ Ваш диалог со специалистом завершен. Цифровой помощник снова к вашим услугам!")
     return {"status": "ok"}
 
@@ -417,7 +414,7 @@ def transfer_to_operator(user_id: str, user_name: str):
     uid = str(user_id)
     active_tickets[uid] = {"name": user_name}
     send_message_to_max(uid, f"⏳ {user_name}, переключаю вас на специалиста. Вся история диалога сохранена, ожидайте ответа.")
-    alert_text = (f"🚨 НОВЫЙ ЗАПРОС ОТ АБИТУРИЕНТА!\n\n👤 Имя: *{user_name}*\n💬 Откройте меню (квадратики слева) и нажмите на сервис бота, чтобы ответить.")
+    alert_text = (f"🚨 НОВЫЙ ЗАПРОС ОТ АБИТУРИЕНТА!\n\n👤 Имя: *{user_name}*\n💬 Откройте веб-панель оператора, чтобы ответить.")
     for op_id in OPERATOR_IDS:
         if op_id and op_id != "ВТОРОЙ_ID_СЮДА":
             send_message_to_max(str(op_id), alert_text)
@@ -445,48 +442,18 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
     return {"status": "ok"}
 
 def process_user_message(chat_id: str, text: str, user_name: str):
-    chat_id = str(chat_id) # 🔐 ЖЕСТКАЯ ТИПИЗАЦИЯ
+    chat_id = str(chat_id)
     is_operator_command_handled = False 
     
     if chat_id in [str(op) for op in OPERATOR_IDS]:
-        text_lower = text.lower()
-        if text_lower.startswith("/клиенты") or text_lower.startswith("/list"):
-            if not active_tickets:
-                send_message_to_max(chat_id, "📭 Сейчас нет активных обращений.")
-                return
-            list_msg = "📋 *Активные обращения:*\n\n"
-            for u_id, info in active_tickets.items():
-                list_msg += f"👤 *{info['name']}* (ID: `{u_id}`)\n"
-            send_message_to_max(chat_id, list_msg)
-            return
-        elif text_lower.startswith("/о "):
-            parts = text.split(" ", 1)
-            if len(parts) >= 2:
-                target_user = str(parts[1].strip())
-                if target_user in active_tickets:
-                    operator_target[chat_id] = target_user
-                    send_message_to_max(chat_id, f"✅ Вы закрепили абитуриента: *{active_tickets[target_user]['name']}*")
-                else: send_message_to_max(chat_id, "❌ Абитуриент не найден.")
-            return
-        elif text_lower.startswith("/закрыть"):
-            parts = text.split(" ", 1)
-            target_user = str(parts[1].strip()) if len(parts) >= 2 else operator_target.get(chat_id)
-            if target_user and target_user in active_tickets:
-                name = active_tickets[target_user]["name"]
-                del active_tickets[target_user]
-                if operator_target.get(chat_id) == target_user: operator_target.pop(chat_id, None)
-                send_message_to_max(target_user, "✅ Ваш диалог со специалистом завершен.")
-                send_message_to_max(chat_id, f"🔒 Тикет с *{name}* закрыт.")
-            return
-        else:
-            target_user = operator_target.get(chat_id)
-            if target_user and target_user in active_tickets:
-                client_name = active_tickets[target_user]["name"]
-                send_message_to_max(target_user, f"👨‍💻 *Специалист приемной комиссии:*\n\n{text}")
-                send_message_to_max(chat_id, f"↗️ [Вам ➔ {client_name}]: {text}")
-                if target_user in user_sessions:
-                    user_sessions[target_user].append({"role": "assistant", "content": f"👨‍💻 Оператор: {text}"})
-                is_operator_command_handled = True
+        target_user = operator_target.get(chat_id)
+        if target_user and target_user in active_tickets:
+            client_name = active_tickets[target_user]["name"]
+            send_message_to_max(target_user, f"👨‍💻 *Специалист приемной комиссии:*\n\n{text}")
+            send_message_to_max(chat_id, f"↗️ [Вам ➔ {client_name}]: {text}")
+            if target_user in user_sessions:
+                user_sessions[target_user].append({"role": "assistant", "content": f"👨‍💻 Оператор: {text}"})
+            is_operator_command_handled = True
 
     if is_operator_command_handled: return
 
@@ -494,7 +461,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         send_message_to_max(chat_id, f"✅ Ваш внутренний ID:\n{chat_id}")
         return
 
-    # 🔐 РЕЖИМ ЖИВОГО ДИАЛОГА (Бот молчит)
+    # РЕЖИМ ЖИВОГО ДИАЛОГА С ОПЕРАТОРОМ (Бот молчит, пересылает операторам)
     if chat_id in active_tickets:
         if chat_id not in user_sessions: user_sessions[chat_id] = []
         user_sessions[chat_id].append({"role": "user", "content": text})
@@ -504,7 +471,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
             if op_id and op_id != "ВТОРОЙ_ID_СЮДА": send_message_to_max(str(op_id), live_alert)
         return
 
-    # РЕЖИМ УМНОГО ИИ-БОТА (RAG)
+    # РЕЖИМ ИИ-БОТА (RAG)
     clean_text_lower = re.sub(r'[^\w\s]', '', text.lower()).strip()
     if clean_text_lower in ["спасибо", "спс", "благодарю", "понял", "ок", "хорошо", "ясно", "понятно", "супер", "отлично"]:
         send_message_to_max(chat_id, "Рад был помочь! Если появятся еще вопросы — обращайтесь. Удачи с поступлением!")
