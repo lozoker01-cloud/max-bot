@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 # --- БИБЛИОТЕКИ ДЛЯ RAG И PDF ---
-import PyPDF2
+import pymupdf4llm  # Используем продвинутый парсер вместо PyPDF2
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -51,12 +51,12 @@ vector_db = None
 try:
     embedder = HuggingFaceEmbeddings(model_name="cointegrated/rubert-tiny2")
 except Exception as e:
-    print(f"Ошибка загрузки модели эмбеддингов: {e}")
+    print(f"Ошибка загрузки модели эмбеддингов: {e}", flush=True)
     embedder = None
 
 def build_rag_database():
     global vector_db
-    print("🔄 Создание векторной базы (RAG)...")
+    print("🔄 Создание векторной базы (RAG)...", flush=True)
     docs_dir = "docs"
     
     if not os.path.exists(docs_dir):
@@ -68,20 +68,21 @@ def build_rag_database():
         filepath = os.path.join(docs_dir, filename)
         if filename.endswith(".pdf"):
             try:
-                with open(filepath, "rb") as f:
-                    reader = PyPDF2.PdfReader(f)
-                    text = "".join([page.extract_text() + "\n" for page in reader.pages if page.extract_text()])
-                    if text.strip():
-                        raw_docs.append(Document(page_content=text, metadata={"source": filename}))
+                # Магия: превращаем PDF в структурированный Markdown
+                md_text = pymupdf4llm.to_markdown(filepath)
+                if md_text.strip():
+                    raw_docs.append(Document(page_content=md_text, metadata={"source": filename}))
+                    print(f"✅ Успешно прочитан PDF: {filename}", flush=True)
             except Exception as e:
-                print(f"Ошибка чтения PDF {filename}: {e}")
+                print(f"❌ Ошибка чтения PDF {filename}: {e}", flush=True)
                 
         elif filename.endswith(".txt"):
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     raw_docs.append(Document(page_content=f.read(), metadata={"source": filename}))
+                    print(f"✅ Успешно прочитан TXT: {filename}", flush=True)
             except Exception as e:
-                print(f"Ошибка чтения TXT {filename}: {e}")
+                print(f"❌ Ошибка чтения TXT {filename}: {e}", flush=True)
                 
     if not raw_docs:
         raw_docs.append(Document(page_content="База знаний пока пуста. Оператор подскажет.", metadata={"source": "system"}))
@@ -96,11 +97,11 @@ def build_rag_database():
     if embedder:
         try:
             vector_db = FAISS.from_documents(chunks, embedder)
-            print(f"✅ Векторная база готова! Создано {len(chunks)} фрагментов из документов.")
+            print(f"✅ Векторная база готова! Создано {len(chunks)} фрагментов из документов.", flush=True)
         except Exception as e:
-            print(f"Ошибка создания FAISS: {e}")
+            print(f"Ошибка создания FAISS: {e}", flush=True)
     else:
-        print("❌ Эмбеддер не загружен, RAG отключен.")
+        print("❌ Эмбеддер не загружен, RAG отключен.", flush=True)
 
 def semantic_search(query: str, k: int = 4) -> str:
     global vector_db
@@ -115,7 +116,7 @@ def semantic_search(query: str, k: int = 4) -> str:
             context += f"--- ФРАГМЕНТ ИЗ ДОКУМЕНТА '{source}' ---\n{doc.page_content.strip()}\n\n"
         return context
     except Exception as e:
-        print(f"Ошибка поиска: {e}")
+        print(f"Ошибка поиска: {e}", flush=True)
         return ""
 
 @app.on_event("startup")
@@ -327,7 +328,7 @@ def api_reply(data: ReplyData):
 @app.post("/api/close/{user_id}")
 def api_close(user_id: str):
     uid = str(user_id).strip()
-    print(f"🔒 ПРИНУДИТЕЛЬНОЕ ЗАКРЫТИЕ ТИКЕТА ДЛЯ ID: '{uid}'")
+    print(f"🔒 ПРИНУДИТЕЛЬНОЕ ЗАКРЫТИЕ ТИКЕТА ДЛЯ ID: '{uid}'", flush=True)
     
     if uid in active_tickets:
         del active_tickets[uid]
@@ -362,19 +363,26 @@ def get_groq_answer(chat_id: str, user_message: str) -> str:
     if len(history) >= 2 and len(user_message.split()) <= 6:
         search_query = f"{history[-2]['content']} {user_message}"
         
-    retrieved_context = semantic_search(search_query, k=5)
+    # БЕРЕМ БОЛЬШЕ ФРАГМЕНТОВ ДЛЯ ЛУЧШЕГО КОНТЕКСТА (k=8)
+    retrieved_context = semantic_search(search_query, k=8)
+    
+    # ОТЛАДКА В КОНСОЛЬ СЕРВЕРА
+    print(f"\n🔍 [RAG DEBUG] Вопрос: {user_message}", flush=True)
+    print(f"📄 [RAG DEBUG] Найденный контекст:\n{retrieved_context}\n" + "="*40, flush=True)
     
     greeting = "1. БЕЗ ПРИВЕТСТВИЙ: Диалог уже идет, отвечай сразу по делу."
     if not history: greeting = "1. ПОЗДОРОВАЙСЯ: Это первый вопрос, начни вежливо."
 
+    # ЖЕСТКАЯ ЗАЩИТА ОТ ГАЛЛЮЦИНАЦИЙ + РЕЖИМ УТОЧНЕНИЯ
     system_prompt = (
         "Ты — официальный цифровой помощник приемной комиссии РГСУ.\n"
-        "Твоя главная задача — давать ИДЕАЛЬНО ТОЧНЫЕ ответы на основе предоставленных фрагментов документов.\n\n"
-        "🔴 СТРОГИЕ ПРАВИЛА:\n"
+        "Твоя главная задача — консультировать абитуриентов, опираясь ТОЛЬКО на предоставленные фрагменты документов.\n\n"
+        "🔴 АЛГОРИТМ РАБОТЫ И ПРАВИЛА:\n"
         f"{greeting}\n"
-        "2. ОТВЕЧАЙ ТОЛЬКО НА ОСНОВЕ ФРАГМЕНТОВ НИЖЕ.\n"
-        "3. Если в фрагментах НЕТ ответа на вопрос пользователя, КАТЕГОРИЧЕСКИ ЗАПРЕЩАЕТСЯ придумывать ответ. В этом случае скажи: «К сожалению, я не нашел точной информации в правилах. Напишите слово 'Оператор', и специалист вам поможет.»\n"
-        "4. Отвечай кратко, понятно и по делу.\n\n"
+        "2. РЕЖИМ ДИАЛОГА И УТОЧНЕНИЙ: Если вопрос слишком общий (например, «какой проходной балл?», «сколько стоит обучение?», «какие экзамены сдавать?»), и в документах есть разные условия (зависит от факультета, формы обучения, базы 9/11 классов или колледжа) — НЕ пытайся угадать и не вываливай все варианты. Задай ОДИН короткий вежливый уточняющий вопрос (например: «Уточните, пожалуйста, какое направление подготовки вас интересует и после какого класса вы поступаете?»).\n"
+        "3. ТОЧНОСТЬ ОТВЕТОВ: Если пользователь дал конкретный вопрос, отвечай четко и по делу, используя ТОЛЬКО раздел 'ФРАГМЕНТЫ ОФИЦИАЛЬНЫХ ДОКУМЕНТОВ'.\n"
+        "4. ЗАПРЕТ НА ВЫДУМКИ: КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО брать информацию из интернета, придумывать баллы, даты или выдумывать правила вуза.\n"
+        "5. ПЕРЕВОД НА ОПЕРАТОРА: Если в документах действительно НЕТ информации по запросу пользователя (даже после уточнений), ты ОБЯЗАН ответить ровно так: «К сожалению, я не нашел точной информации в правилах приёма. Напишите слово 'Оператор', и специалист вам поможет.»\n\n"
         f"=== ФРАГМЕНТЫ ОФИЦИАЛЬНЫХ ДОКУМЕНТОВ ===\n{retrieved_context}"
     )
       
@@ -454,6 +462,19 @@ def process_user_message(chat_id: str, text: str, user_name: str):
     chat_id = str(chat_id)
     text_clean = text.strip().lower()
 
+    # 🛑 ЖЕСТКАЯ ЗАЩИТА ОПЕРАТОРА ОТ ТИКЕТОВ
+    if chat_id in [str(op) for op in OPERATOR_IDS]:
+        target_user = operator_target.get(chat_id)
+        if target_user and target_user in active_tickets:
+            client_name = active_tickets[target_user]["name"]
+            send_message_to_max(target_user, f"👨‍💻 *Специалист приемной комиссии:*\n\n{text}")
+            send_message_to_max(chat_id, f"↗️ [Вам ➔ {client_name}]: {text}")
+            if target_user in user_sessions:
+                user_sessions[target_user].append({"role": "assistant", "content": f"👨‍💻 Оператор: {text}"})
+        else:
+            send_message_to_max(chat_id, "⚠️ У вас не выбран активный абитуриент. Выберите его в веб-панели слева.")
+        return
+
     # 1. КОМАНДА СБРОСА / СТАРТА
     if text_clean in ["/start", "старт", "start", "бот"]:
         if chat_id in active_tickets:
@@ -464,20 +485,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         send_message_to_max(chat_id, "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, и я постараюсь помочь!")
         return
 
-    # 2. ЕСЛИ ПИШЕТ ОПЕРАТОР
-    if chat_id in [str(op) for op in OPERATOR_IDS]:
-        target_user = operator_target.get(chat_id)
-        if target_user and target_user in active_tickets:
-            client_name = active_tickets[target_user]["name"]
-            send_message_to_max(target_user, f"👨‍💻 *Специалист приемной комиссии:*\n\n{text}")
-            send_message_to_max(chat_id, f"↗️ [Вам ➔ {client_name}]: {text}")
-            if target_user in user_sessions:
-                user_sessions[target_user].append({"role": "assistant", "content": f"👨‍💻 Оператор: {text}"})
-        else:
-            send_message_to_max(chat_id, "⚠️ У вас не выбран активный абитуриент для ответа. Выберите его в веб-панели.")
-        return
-
-    # 3. ЕСЛИ ЮЗЕР В ТИКЕТЕ С ОПЕРАТОРОМ
+    # 2. ЕСЛИ ЮЗЕР В ТИКЕТЕ С ОПЕРАТОРОМ
     if chat_id in active_tickets:
         if text_clean in ["оператор", "менеджер", "человек"]:
             send_message_to_max(chat_id, "⏳ Вы уже ожидаете ответа специалиста. Сообщение передано.")
@@ -495,12 +503,12 @@ def process_user_message(chat_id: str, text: str, user_name: str):
                 send_message_to_max(str(op_id), live_alert)
         return
 
-    # 4. ЗАПРОС ОПЕРАТОРА
+    # 3. ЗАПРОС ОПЕРАТОРА
     if "оператор" in text_clean:
         transfer_to_operator(chat_id, user_name)
         return
 
-    # 5. ОБЫЧНЫЙ ИИ-БОТ (RAG)
+    # 4. ОБЫЧНЫЙ ИИ-БОТ (RAG)
     if text_clean in ["спасибо", "спс", "благодарю", "понял", "ок", "хорошо", "ясно", "понятно", "супер", "отлично"]:
         send_message_to_max(chat_id, "Рад был помочь! Если появятся еще вопросы — обращайтесь. Удачи с поступлением!")
         return
