@@ -31,7 +31,7 @@ MAX_BOT_TOKEN = raw_max_token.replace("\n", "").replace("\r", "").strip()
 
 MAX_API_BASE = "https://platform-api2.max.ru"
 
-# СПИСОК ID ОПЕРАТОРОВ (только актуальные)
+# СПИСОК ID ОПЕРАТОРОВ (актуальные)
 OPERATOR_IDS = ["20195632"] 
 
 # ВАШ WEBHOOK GOOGLE ТАБЛИЦ
@@ -246,11 +246,14 @@ HTML_PANEL = """
             } catch (e) { console.error(e); }
         }
 
-        function selectTicket(id, name) {
+        async function selectTicket(id, name) {
             currentUserId = id;
             lastMsgCount = 0;
             document.getElementById('current-name').innerText = name;
             document.getElementById('no-chat-overlay').style.display = 'none';
+            
+            await fetch(`/api/select_ticket/${id}`, { method: 'POST' });
+            
             fetchTickets();
             fetchChat();
         }
@@ -305,6 +308,13 @@ def api_get_tickets():
 @app.get("/api/chat/{user_id}")
 def api_get_chat(user_id: str):
     return user_sessions.get(str(user_id), [])
+
+@app.post("/api/select_ticket/{user_id}")
+def api_select_ticket(user_id: str):
+    if OPERATOR_IDS:
+        op_id = str(OPERATOR_IDS[0])
+        operator_target[op_id] = str(user_id)
+    return {"status": "ok"}
 
 @app.post("/api/reply")
 def api_reply(data: ReplyData):
@@ -444,7 +454,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
     chat_id = str(chat_id)
     text_clean = text.strip().lower()
 
-    # 1. КОМАНДА СБРОСА / СТАРТА (Всегда возвращает бота к жизни)
+    # 1. КОМАНДА СБРОСА / СТАРТА
     if text_clean in ["/start", "старт", "start", "бот"]:
         if chat_id in active_tickets:
             del active_tickets[chat_id]
@@ -454,7 +464,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         send_message_to_max(chat_id, "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, и я постараюсь помочь!")
         return
 
-    # 2. ЕСЛИ ПИШЕТ ОПЕРАТОР (И он есть в актуальном списке OPERATOR_IDS)
+    # 2. ЕСЛИ ПИШЕТ ОПЕРАТОР
     if chat_id in [str(op) for op in OPERATOR_IDS]:
         target_user = operator_target.get(chat_id)
         if target_user and target_user in active_tickets:
@@ -467,7 +477,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
             send_message_to_max(chat_id, "⚠️ У вас не выбран активный абитуриент для ответа. Выберите его в веб-панели.")
         return
 
-    # 3. ЕСЛИ ЮЗЕР НАХОДИТСЯ В РЕЖИМЕ ТИКЕТА С ОПЕРАТОРОМ
+    # 3. ЕСЛИ ЮЗЕР В ТИКЕТЕ С ОПЕРАТОРОМ
     if chat_id in active_tickets:
         if text_clean in ["оператор", "менеджер", "человек"]:
             send_message_to_max(chat_id, "⏳ Вы уже ожидаете ответа специалиста. Сообщение передано.")
@@ -485,7 +495,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
                 send_message_to_max(str(op_id), live_alert)
         return
 
-    # 4. ЗАПРОС ОПЕРАТОРА (Переход в режим тикета)
+    # 4. ЗАПРОС ОПЕРАТОРА
     if "оператор" in text_clean:
         transfer_to_operator(chat_id, user_name)
         return
