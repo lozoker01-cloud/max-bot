@@ -67,6 +67,8 @@ def build_rag_database():
     for filename in os.listdir(docs_dir):
         filepath = os.path.join(docs_dir, filename)
         if filename.endswith(".pdf"):
+            # 👇 ЭТА СТРОКА ПОКАЖЕТ, НА КАКОМ ФАЙЛЕ ЗАВИСАЕТ СЕРВЕР 👇
+            print(f"⏳ Начинаю парсинг файла: {filename}...", flush=True)
             try:
                 # Магия: превращаем PDF в структурированный Markdown
                 md_text = pymupdf4llm.to_markdown(filepath)
@@ -77,6 +79,7 @@ def build_rag_database():
                 print(f"❌ Ошибка чтения PDF {filename}: {e}", flush=True)
                 
         elif filename.endswith(".txt"):
+            print(f"⏳ Начинаю чтение TXT: {filename}...", flush=True)
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     raw_docs.append(Document(page_content=f.read(), metadata={"source": filename}))
