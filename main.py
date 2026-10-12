@@ -523,3 +523,4 @@ def process_user_message(chat_id: str, text: str, user_name: str):
     bot_reply = get_groq_answer(chat_id, text)
     send_message_to_max(chat_id, bot_reply)
     log_to_google_sheet(user_name, chat_id, text, bot_reply)
+    
