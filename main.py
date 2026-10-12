@@ -1,4 +1,11 @@
 import os
+
+# =====================================================================
+# 🚨 ВАЖНО: ПРОКСИ ДЛЯ GROQ СТАВИМ В САМОЕ НАЧАЛО ДО ВСЕХ ИМПОРТОВ!
+# =====================================================================
+os.environ["HTTP_PROXY"] = "socks5h://127.0.0.1:10808"
+os.environ["HTTPS_PROXY"] = "socks5h://127.0.0.1:10808"
+
 import json
 import requests
 import urllib3
@@ -13,7 +20,7 @@ import PyPDF2
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.schema import Document
+from langchain_core.documents import Document  # Обновленный импорт для современных версий LangChain
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -86,8 +93,8 @@ def build_rag_database():
         
     # 3. Умная нарезка текста (чанкинг) с перекрытием контекста
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,       # Размер куска текста
-        chunk_overlap=200,    # Перекрытие, чтобы не терять контекст на стыках
+        chunk_size=800,       
+        chunk_overlap=200,    
         separators=["\n\n", "\n", ".", " ", ""]
     )
     chunks = text_splitter.split_documents(raw_docs)
@@ -107,7 +114,6 @@ def semantic_search(query: str, k: int = 4) -> str:
     if not vector_db: 
         return ""
     
-    # Поиск самых подходящих по смыслу фрагментов
     try:
         results = vector_db.similarity_search(query, k=k)
         context = ""
@@ -130,7 +136,7 @@ def api_reload_faq():
     return {"status": "success", "message": "Документы успешно перечитаны и векторизованы!"}
 
 # =====================================================================
-# 🖥️ ВИЗУАЛЬНАЯ WEB-ПАНЕЛЬ ОПЕРАТОРА (Осталась без изменений)
+# 🖥️ ВИЗУАЛЬНАЯ WEB-ПАНЕЛЬ ОПЕРАТОРА
 # =====================================================================
 class ReplyData(BaseModel):
     user_id: str
@@ -305,20 +311,22 @@ def api_get_tickets():
 
 @app.get("/api/chat/{user_id}")
 def api_get_chat(user_id: str):
-    return user_sessions.get(user_id, [])
+    return user_sessions.get(str(user_id), [])
 
 @app.post("/api/reply")
 def api_reply(data: ReplyData):
-    send_message_to_max(data.user_id, f"👨‍💻 *Специалист приемной комиссии:*\n\n{data.text}")
-    if data.user_id in user_sessions:
-        user_sessions[data.user_id].append({"role": "assistant", "content": f"👨‍💻 Оператор: {data.text}"})
+    uid = str(data.user_id)
+    send_message_to_max(uid, f"👨‍💻 *Специалист приемной комиссии:*\n\n{data.text}")
+    if uid in user_sessions:
+        user_sessions[uid].append({"role": "assistant", "content": f"👨‍💻 Оператор: {data.text}"})
     return {"status": "ok"}
 
 @app.post("/api/close/{user_id}")
 def api_close(user_id: str):
-    if user_id in active_tickets:
-        del active_tickets[user_id]
-        send_message_to_max(user_id, "✅ Ваш диалог со специалистом завершен. Цифровой помощник снова к вашим услугам!")
+    uid = str(user_id)
+    if uid in active_tickets:
+        del active_tickets[uid]
+        send_message_to_max(uid, "✅ Ваш диалог со специалистом завершен. Цифровой помощник снова к вашим услугам!")
     return {"status": "ok"}
 
 # =====================================================================
@@ -336,10 +344,10 @@ def register_webhook():
     except: pass
 
 def get_groq_answer(chat_id: str, user_message: str) -> str:
+    chat_id = str(chat_id)
     if chat_id not in user_sessions: user_sessions[chat_id] = []
     history = user_sessions[chat_id]
 
-    # Умный семантический поиск по загруженным PDF и TXT документам
     search_query = user_message
     if len(history) >= 2 and len(user_message.split()) <= 6:
         search_query = f"{history[-2]['content']} {user_message}"
@@ -349,7 +357,6 @@ def get_groq_answer(chat_id: str, user_message: str) -> str:
     greeting = "1. БЕЗ ПРИВЕТСТВИЙ: Диалог уже идет, отвечай сразу по делу."
     if not history: greeting = "1. ПОЗДОРОВАЙСЯ: Это первый вопрос, начни вежливо."
 
-    # ЖЕСТКИЙ ПРОМПТ ДЛЯ GROQ С ЗАПРЕТОМ ГАЛЛЮЦИНАЦИЙ
     system_prompt = (
         "Ты — официальный цифровой помощник приемной комиссии РГСУ.\n"
         "Твоя главная задача — давать ИДЕАЛЬНО ТОЧНЫЕ ответы на основе предоставленных фрагментов документов.\n\n"
@@ -373,7 +380,7 @@ def get_groq_answer(chat_id: str, user_message: str) -> str:
     try:
         res = requests.post("https://api.groq.com/openai/v1/chat/completions", 
                             headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}, 
-                            json={"model": "openai/gpt-oss-120b", "messages": messages_for_api, "temperature": 0.1, "max_tokens": 600}, 
+                            json={"model": "llama-3.1-70b-versatile", "messages": messages_for_api, "temperature": 0.1, "max_tokens": 600}, 
                             timeout=20)
         data = res.json()
         if res.status_code == 200:
@@ -403,8 +410,9 @@ def log_to_google_sheet(user_name, user_id, question, answer):
     except: pass
 
 def transfer_to_operator(user_id: str, user_name: str):
-    active_tickets[user_id] = {"name": user_name}
-    send_message_to_max(user_id, f"⏳ {user_name}, переключаю вас на специалиста. Вся история диалога сохранена, ожидайте ответа.")
+    uid = str(user_id)
+    active_tickets[uid] = {"name": user_name}
+    send_message_to_max(uid, f"⏳ {user_name}, переключаю вас на специалиста. Вся история диалога сохранена, ожидайте ответа.")
     alert_text = (f"🚨 НОВЫЙ ЗАПРОС ОТ АБИТУРИЕНТА!\n\n👤 Имя: *{user_name}*\n💬 Откройте меню (квадратики слева) и нажмите на сервис бота, чтобы ответить.")
     for op_id in OPERATOR_IDS:
         if op_id and op_id != "ВТОРОЙ_ID_СЮДА":
@@ -433,8 +441,10 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
     return {"status": "ok"}
 
 def process_user_message(chat_id: str, text: str, user_name: str):
+    chat_id = str(chat_id) # 🔐 ЖЕСТКАЯ ТИПИЗАЦИЯ
     is_operator_command_handled = False 
-    if str(chat_id) in [str(op) for op in OPERATOR_IDS]:
+    
+    if chat_id in [str(op) for op in OPERATOR_IDS]:
         text_lower = text.lower()
         if text_lower.startswith("/клиенты") or text_lower.startswith("/list"):
             if not active_tickets:
@@ -448,24 +458,24 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         elif text_lower.startswith("/о "):
             parts = text.split(" ", 1)
             if len(parts) >= 2:
-                target_user = parts[1].strip()
+                target_user = str(parts[1].strip())
                 if target_user in active_tickets:
-                    operator_target[str(chat_id)] = target_user
+                    operator_target[chat_id] = target_user
                     send_message_to_max(chat_id, f"✅ Вы закрепили абитуриента: *{active_tickets[target_user]['name']}*")
                 else: send_message_to_max(chat_id, "❌ Абитуриент не найден.")
             return
         elif text_lower.startswith("/закрыть"):
             parts = text.split(" ", 1)
-            target_user = parts[1].strip() if len(parts) >= 2 else operator_target.get(str(chat_id))
+            target_user = str(parts[1].strip()) if len(parts) >= 2 else operator_target.get(chat_id)
             if target_user and target_user in active_tickets:
                 name = active_tickets[target_user]["name"]
                 del active_tickets[target_user]
-                if operator_target.get(str(chat_id)) == target_user: operator_target.pop(str(chat_id), None)
+                if operator_target.get(chat_id) == target_user: operator_target.pop(chat_id, None)
                 send_message_to_max(target_user, "✅ Ваш диалог со специалистом завершен.")
                 send_message_to_max(chat_id, f"🔒 Тикет с *{name}* закрыт.")
             return
         else:
-            target_user = operator_target.get(str(chat_id))
+            target_user = operator_target.get(chat_id)
             if target_user and target_user in active_tickets:
                 client_name = active_tickets[target_user]["name"]
                 send_message_to_max(target_user, f"👨‍💻 *Специалист приемной комиссии:*\n\n{text}")
@@ -480,7 +490,7 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         send_message_to_max(chat_id, f"✅ Ваш внутренний ID:\n{chat_id}")
         return
 
-    # РЕЖИМ ЖИВОГО ДИАЛОГА ДЛЯ АБИТУРИЕНТА
+    # 🔐 РЕЖИМ ЖИВОГО ДИАЛОГА (Бот молчит)
     if chat_id in active_tickets:
         if chat_id not in user_sessions: user_sessions[chat_id] = []
         user_sessions[chat_id].append({"role": "user", "content": text})
@@ -506,7 +516,6 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         transfer_to_operator(chat_id, user_name)
         return
 
-    # Запрос к Groq с векторным контекстом
     bot_reply = get_groq_answer(chat_id, text)
     
     if "🚨 ОШИБКА" not in bot_reply:
