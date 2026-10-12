@@ -10,7 +10,6 @@ import json
 import requests
 import urllib3
 import re
-import traceback
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -32,7 +31,7 @@ MAX_BOT_TOKEN = raw_max_token.replace("\n", "").replace("\r", "").strip()
 
 MAX_API_BASE = "https://platform-api2.max.ru"
 
-# СПИСОК ID ОПЕРАТОРОВ
+# СПИСОК ID ОПЕРАТОРОВ (только актуальные)
 OPERATOR_IDS = ["20195632"] 
 
 # ВАШ WEBHOOK GOOGLE ТАБЛИЦ
@@ -317,17 +316,17 @@ def api_reply(data: ReplyData):
 
 @app.post("/api/close/{user_id}")
 def api_close(user_id: str):
-    uid = str(user_id)
-    print(f"🔒 ЗАПРОС НА ЗАКРЫТИЕ ТИКЕТА ДЛЯ ID: '{uid}'")
+    uid = str(user_id).strip()
+    print(f"🔒 ПРИНУДИТЕЛЬНОЕ ЗАКРЫТИЕ ТИКЕТА ДЛЯ ID: '{uid}'")
     
     if uid in active_tickets:
         del active_tickets[uid]
-        # Очищаем привязки операторов
-        for op_key, target in list(operator_target.items()):
-            if target == uid:
-                operator_target.pop(op_key, None)
-                
-        send_message_to_max(uid, "✅ Ваш диалог со специалистом завершен. Цифровой помощник снова к вашим услугам!")
+    
+    for op_key, target in list(operator_target.items()):
+        if target == uid or op_key == uid:
+            operator_target.pop(op_key, None)
+            
+    send_message_to_max(uid, "✅ Ваш диалог со специалистом завершен. Цифровой помощник снова к вашим услугам!")
     return {"status": "ok"}
 
 # =====================================================================
@@ -416,7 +415,7 @@ def transfer_to_operator(user_id: str, user_name: str):
     send_message_to_max(uid, f"⏳ {user_name}, переключаю вас на специалиста. Вся история диалога сохранена, ожидайте ответа.")
     alert_text = (f"🚨 НОВЫЙ ЗАПРОС ОТ АБИТУРИЕНТА!\n\n👤 Имя: *{user_name}*\n💬 Откройте веб-панель оператора, чтобы ответить.")
     for op_id in OPERATOR_IDS:
-        if op_id and op_id != "ВТОРОЙ_ID_СЮДА":
+        if op_id:
             send_message_to_max(str(op_id), alert_text)
 
 @app.api_route("/webhook", methods=["GET", "POST"])
@@ -443,8 +442,19 @@ async def max_webhook(request: Request, background_tasks: BackgroundTasks):
 
 def process_user_message(chat_id: str, text: str, user_name: str):
     chat_id = str(chat_id)
-    is_operator_command_handled = False 
-    
+    text_clean = text.strip().lower()
+
+    # 1. КОМАНДА СБРОСА / СТАРТА (Всегда возвращает бота к жизни)
+    if text_clean in ["/start", "старт", "start", "бот"]:
+        if chat_id in active_tickets:
+            del active_tickets[chat_id]
+        if chat_id in operator_target:
+            operator_target.pop(chat_id, None)
+        user_sessions[chat_id] = []
+        send_message_to_max(chat_id, "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, и я постараюсь помочь!")
+        return
+
+    # 2. ЕСЛИ ПИШЕТ ОПЕРАТОР (И он есть в актуальном списке OPERATOR_IDS)
     if chat_id in [str(op) for op in OPERATOR_IDS]:
         target_user = operator_target.get(chat_id)
         if target_user and target_user in active_tickets:
@@ -453,49 +463,38 @@ def process_user_message(chat_id: str, text: str, user_name: str):
             send_message_to_max(chat_id, f"↗️ [Вам ➔ {client_name}]: {text}")
             if target_user in user_sessions:
                 user_sessions[target_user].append({"role": "assistant", "content": f"👨‍💻 Оператор: {text}"})
-            is_operator_command_handled = True
-
-    if is_operator_command_handled: return
-
-    if text.strip().lower() == "/myid":
-        send_message_to_max(chat_id, f"✅ Ваш внутренний ID:\n{chat_id}")
+        else:
+            send_message_to_max(chat_id, "⚠️ У вас не выбран активный абитуриент для ответа. Выберите его в веб-панели.")
         return
 
-    # РЕЖИМ ЖИВОГО ДИАЛОГА С ОПЕРАТОРОМ (Бот молчит, пересылает операторам)
+    # 3. ЕСЛИ ЮЗЕР НАХОДИТСЯ В РЕЖИМЕ ТИКЕТА С ОПЕРАТОРОМ
     if chat_id in active_tickets:
-        if chat_id not in user_sessions: user_sessions[chat_id] = []
+        if text_clean in ["оператор", "менеджер", "человек"]:
+            send_message_to_max(chat_id, "⏳ Вы уже ожидаете ответа специалиста. Сообщение передано.")
+            return
+            
+        if chat_id not in user_sessions: 
+            user_sessions[chat_id] = []
         user_sessions[chat_id].append({"role": "user", "content": text})
-        client_name = active_tickets[chat_id]["name"]
-        live_alert = f"💬 *Сообщение от {client_name}*:\n\n{text}"
-        for op_id in OPERATOR_IDS:
-            if op_id and op_id != "ВТОРОЙ_ID_СЮДА": send_message_to_max(str(op_id), live_alert)
-        return
-
-    # РЕЖИМ ИИ-БОТА (RAG)
-    clean_text_lower = re.sub(r'[^\w\s]', '', text.lower()).strip()
-    if clean_text_lower in ["спасибо", "спс", "благодарю", "понял", "ок", "хорошо", "ясно", "понятно", "супер", "отлично"]:
-        send_message_to_max(chat_id, "Рад был помочь! Если появятся еще вопросы — обращайтесь. Удачи с поступлением!")
-        return
-
-    if text.lower() in ["/start", "старт"]:
-        send_message_to_max(chat_id, "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, и я постараюсь помочь!")
-        user_sessions[chat_id] = []
-        if chat_id in active_tickets: del active_tickets[chat_id]
-        return
         
-    if "оператор" in text.lower():
+        client_name = active_tickets[chat_id]["name"]
+        live_alert = f"💬 *Сообщение от абитуриента {client_name}* (ID: {chat_id}):\n\n{text}"
+        
+        for op_id in OPERATOR_IDS:
+            if op_id: 
+                send_message_to_max(str(op_id), live_alert)
+        return
+
+    # 4. ЗАПРОС ОПЕРАТОРА (Переход в режим тикета)
+    if "оператор" in text_clean:
         transfer_to_operator(chat_id, user_name)
         return
 
-    bot_reply = get_groq_answer(chat_id, text)
-    
-    if "🚨 ОШИБКА" not in bot_reply:
-        if "к сожалению" not in bot_reply.lower() and "не нашел точной информации" not in bot_reply.lower():
-            final_reply = bot_reply + "\n\n---\n*Если я не смог полностью ответить на ваш вопрос, напишите слово «Оператор».*"
-        else:
-            final_reply = bot_reply
-    else:
-        final_reply = bot_reply
+    # 5. ОБЫЧНЫЙ ИИ-БОТ (RAG)
+    if text_clean in ["спасибо", "спс", "благодарю", "понял", "ок", "хорошо", "ясно", "понятно", "супер", "отлично"]:
+        send_message_to_max(chat_id, "Рад был помочь! Если появятся еще вопросы — обращайтесь. Удачи с поступлением!")
+        return
 
-    send_message_to_max(chat_id, final_reply)
+    bot_reply = get_groq_answer(chat_id, text)
+    send_message_to_max(chat_id, bot_reply)
     log_to_google_sheet(user_name, chat_id, text, bot_reply)
