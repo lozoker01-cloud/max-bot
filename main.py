@@ -49,8 +49,8 @@ operator_target = {}
 vector_db = None
 
 try:
-    # ИСПОЛЬЗУЕМ УМНЫЙ МНОГОЯЗЫЧНЫЙ ЭМБЕДДЕР ОТ MICROSOFT
-    embedder = HuggingFaceEmbeddings(model_name="intfloat/multilingual-e5-small")
+    # ВОЗВРАЩАЕМ ЛЕГКУЮ МОДЕЛЬ, ЧТОБЫ СЕРВЕР НЕ ПАДАЛ (OOM KILL)
+    embedder = HuggingFaceEmbeddings(model_name="cointegrated/rubert-tiny2")
 except Exception as e:
     print(f"Ошибка загрузки модели эмбеддингов: {e}", flush=True)
     embedder = None
@@ -526,3 +526,5 @@ def process_user_message(chat_id: str, text: str, user_name: str):
     bot_reply = get_groq_answer(chat_id, text)
     send_message_to_max(chat_id, bot_reply)
     log_to_google_sheet(user_name, chat_id, text, bot_reply)
+
+
