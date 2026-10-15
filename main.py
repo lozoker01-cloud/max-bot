@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 # --- БИБЛИОТЕКИ ДЛЯ RAG И PDF ---
-import fitz  # Надежный парсер PyMuPDF, работающий с любыми путями и кириллицей
+import fitz  # Надежный парсер PyMuPDF
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -49,7 +49,6 @@ operator_target = {}
 vector_db = None
 
 try:
-    # ВОЗВРАЩАЕМ ЛЕГКУЮ МОДЕЛЬ, ЧТОБЫ СЕРВЕР НЕ ПАДАЛ (OOM KILL)
     embedder = HuggingFaceEmbeddings(model_name="cointegrated/rubert-tiny2")
 except Exception as e:
     print(f"Ошибка загрузки модели эмбеддингов: {e}", flush=True)
@@ -73,7 +72,8 @@ def build_rag_database():
                 text = ""
                 with fitz.open(filepath) as doc:
                     for page in doc:
-                        text += page.get_text() + "\n"
+                        # 🔴 ГЛАВНОЕ ИЗМЕНЕНИЕ ДЛЯ ТАБЛИЦ: sort=True читает текст слева-направо
+                        text += page.get_text("text", sort=True) + "\n"
                 
                 if text.strip():
                     raw_docs.append(Document(page_content=text, metadata={"source": filename}))
@@ -95,7 +95,6 @@ def build_rag_database():
     if not raw_docs:
         raw_docs.append(Document(page_content="База знаний пока пуста. Оператор подскажет.", metadata={"source": "system"}))
         
-    # УВЕЛИЧЕННЫЕ ЧАНКИ ДЛЯ СОХРАНЕНИЯ ТАБЛИЦ И КОНТЕКСТА ДОКУМЕНТА
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=2500,       
         chunk_overlap=500,    
@@ -372,27 +371,26 @@ def get_groq_answer(chat_id: str, user_message: str) -> str:
     if len(history) >= 2 and len(user_message.split()) <= 6:
         search_query = f"{history[-2]['content']} {user_message}"
         
-    # БЕРЕМ БОЛЬШЕ ФРАГМЕНТОВ ДЛЯ ЛУЧШЕГО КОНТЕКСТА (k=8)
     retrieved_context = semantic_search(search_query, k=8)
     
-    # ОТЛАДКА В КОНСОЛЬ СЕРВЕРА
     print(f"\n🔍 [RAG DEBUG] Вопрос: {user_message}", flush=True)
     print(f"📄 [RAG DEBUG] Найденный контекст:\n{retrieved_context}\n" + "="*40, flush=True)
     
     greeting = "1. БЕЗ ПРИВЕТСТВИЙ: Диалог уже идет, отвечай сразу по делу."
     if not history: greeting = "1. ПОЗДОРОВАЙСЯ: Это первый вопрос, начни вежливо."
 
-    # ЖЕСТКАЯ ЗАЩИТА ОТ ГАЛЛЮЦИНАЦИЙ + РЕЖИМ УТОЧНЕНИЯ И ССЫЛОК
     system_prompt = (
-        "Ты — официальный цифровой помощник приемной комиссии РГСУ.\n"
-        "Твоя главная задача — консультировать абитуриентов, опираясь ТОЛЬКО на предоставленные фрагменты документов.\n\n"
-        "🔴 АЛГОРИТМ РАБОТЫ И ПРАВИЛА:\n"
+        "Ты — строгий цифровой ассистент приемной комиссии РГСУ.\n"
+        "Отвечай ИСКЛЮЧИТЕЛЬНО на основе предоставленных ниже фрагментов документов.\n\n"
+        "🔴 СТРОГИЙ АЛГОРИТМ ПОВЕДЕНИЯ:\n"
         f"{greeting}\n"
-        "2. РЕЖИМ ДИАЛОГА И УТОЧНЕНИЙ: Если вопрос слишком общий (например, «какой проходной балл?», «сколько стоит обучение?»), и в документах есть разные условия (зависит от факультета, базы 9/11 классов) — НЕ пытайся угадать. Задай ОДИН короткий вежливый уточняющий вопрос.\n"
-        "3. ТОЧНОСТЬ ОТВЕТОВ: Если пользователь дал конкретный вопрос, отвечай четко и по делу, используя ТОЛЬКО раздел 'ФРАГМЕНТЫ ОФИЦИАЛЬНЫХ ДОКУМЕНТОВ'.\n"
-        "4. ЗАПРЕТ НА ВЫДУМКИ: КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО брать информацию из интернета, придумывать баллы, даты или выдумывать правила вуза.\n"
-        "5. ПЕРЕВОД НА ОПЕРАТОРА: Если в документах действительно НЕТ информации по запросу пользователя (даже после уточнений), ты ОБЯЗАН ответить ровно так: «К сожалению, я не нашел точной информации в правилах приёма. Напишите слово 'Оператор', и специалист вам поможет.»\n"
-        "6. ОБЯЗАТЕЛЬНАЯ ССЫЛКА НА ДОКУМЕНТ: Каждый свой ответ, содержащий факты, цифры или правила, ты ОБЯЗАН начинать с фразы «Согласно документу [Название документа]...». Если ты не можешь сослаться на конкретный документ из фрагментов, значит, ты не знаешь ответа, и должен перевести на Оператора.\n\n"
+        "2. ОБЯЗАТЕЛЬНОЕ УТОЧНЕНИЕ: Если пользователь задает общий вопрос про экзамены, проходные баллы или стоимость, и в вопросе НЕТ указания уровня образования — СНАЧАЛА ЗАДАЙ УТОЧНЯЮЩИЙ ВОПРОС!\n"
+        "   Спроси так: «Уточните, пожалуйста, на базе какого образования вы планируете поступать (11 классов, колледж/СПО или высшее)?».\n"
+        "3. ПРАВИЛО ОТСУТСТВИЯ ТОЧНЫХ ДАННЫХ: Если в предоставленных фрагментах документов НЕТ прямого указания перечня экзаменов именно для запрашиваемой специальности — ТЕБЕ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО ДОДУМЫВАТЬ.\n"
+        "   В этом случае ты ОБЯЗАН ответить строго так:\n"
+        "   «К сожалению, я не нашел точной информации в правилах приёма. Напишите слово 'Оператор', и специалист вам поможет.»\n"
+        "4. ССЫЛКА НА ДОКУМЕНТ: Если ты даешь конкретный ответ из документа, начни с: «Согласно документу [Название файла]...».\n"
+        "5. ТАБЛИЦЫ: Данные в фрагментах часто извлечены из таблиц (они могут выглядеть как сплошной текст). Внимательно сопоставляй названия специальностей с идущими рядом с ними предметами и баллами, не перепутай строки.\n\n"
         f"=== ФРАГМЕНТЫ ОФИЦИАЛЬНЫХ ДОКУМЕНТОВ ===\n{retrieved_context}"
     )
       
@@ -408,7 +406,7 @@ def get_groq_answer(chat_id: str, user_message: str) -> str:
     try:
         res = requests.post("https://api.groq.com/openai/v1/chat/completions", 
                             headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}, 
-                            json={"model": "llama-3.1-70b-versatile", "messages": messages_for_api, "temperature": 0.1, "max_tokens": 600}, 
+                            json={"model": "llama-3.1-70b-versatile", "messages": messages_for_api, "temperature": 0.0, "max_tokens": 600}, 
                             timeout=20)
         data = res.json()
         if res.status_code == 200:
@@ -472,7 +470,6 @@ def process_user_message(chat_id: str, text: str, user_name: str):
     chat_id = str(chat_id)
     text_clean = text.strip().lower()
 
-    # 🛑 ЖЕСТКАЯ ЗАЩИТА ОПЕРАТОРА ОТ ТИКЕТОВ
     if chat_id in [str(op) for op in OPERATOR_IDS]:
         target_user = operator_target.get(chat_id)
         if target_user and target_user in active_tickets:
@@ -485,7 +482,6 @@ def process_user_message(chat_id: str, text: str, user_name: str):
             send_message_to_max(chat_id, "⚠️ У вас не выбран активный абитуриент. Выберите его в веб-панели слева.")
         return
 
-    # 1. КОМАНДА СБРОСА / СТАРТА
     if text_clean in ["/start", "старт", "start", "бот"]:
         if chat_id in active_tickets:
             del active_tickets[chat_id]
@@ -495,7 +491,6 @@ def process_user_message(chat_id: str, text: str, user_name: str):
         send_message_to_max(chat_id, "Здравствуйте! Я цифровой ассистент приемной комиссии РГСУ. Задайте мне любой вопрос о поступлении, и я постараюсь помочь!")
         return
 
-    # 2. ЕСЛИ ЮЗЕР В ТИКЕТЕ С ОПЕРАТОРОМ
     if chat_id in active_tickets:
         if text_clean in ["оператор", "менеджер", "человек"]:
             send_message_to_max(chat_id, "⏳ Вы уже ожидаете ответа специалиста. Сообщение передано.")
@@ -513,12 +508,10 @@ def process_user_message(chat_id: str, text: str, user_name: str):
                 send_message_to_max(str(op_id), live_alert)
         return
 
-    # 3. ЗАПРОС ОПЕРАТОРА
     if "оператор" in text_clean:
         transfer_to_operator(chat_id, user_name)
         return
 
-    # 4. ОБЫЧНЫЙ ИИ-БОТ (RAG)
     if text_clean in ["спасибо", "спс", "благодарю", "понял", "ок", "хорошо", "ясно", "понятно", "супер", "отлично"]:
         send_message_to_max(chat_id, "Рад был помочь! Если появятся еще вопросы — обращайтесь. Удачи с поступлением!")
         return
@@ -526,5 +519,3 @@ def process_user_message(chat_id: str, text: str, user_name: str):
     bot_reply = get_groq_answer(chat_id, text)
     send_message_to_max(chat_id, bot_reply)
     log_to_google_sheet(user_name, chat_id, text, bot_reply)
-
-
